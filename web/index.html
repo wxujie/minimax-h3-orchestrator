@@ -84,7 +84,12 @@
 const $=id=>document.getElementById(id);
 const API="/api/v1";
 const fmt=new Intl.RelativeTimeFormat("en",{numeric:"auto"});
-const ago=iso=>iso?fmt.format(Math.round((new Date(iso)-Date.now())/1000),"second"):"—";
+const ago=iso=>{
+  if(!iso) return "—";
+  // SQLite gives naive UTC; a missing zone marker must be read as UTC, not local.
+  if(!/[Zz]|[+-]\d{2}:?\d{2}$/.test(iso)) iso+="Z";
+  return fmt.format(Math.round((new Date(iso)-Date.now())/1000),"second");
+}
 const esc=s=>(s??"").toString().replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function badge(st){
   const map={"COMPLETED":"b-ok","READY":"b-ok","RUNNING":"b-run","STARTING":"b-run",

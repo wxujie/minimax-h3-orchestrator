@@ -76,8 +76,7 @@ class AccountManager:
                     "quota_status": row.quota_status,
                     "gpu_available": row.quota_gpu_available,
                     "code_usage_hours": row.quota_code_usage_hours,
-                    "last_checked_at": row.last_checked_at.isoformat()
-                    if row.last_checked_at else None,
+                    "last_checked_at": db.utc_iso(row.last_checked_at),
                     "notebooks": [_notebook_public(n) for n in row.notebooks],
                 }
                 if include_credentials:

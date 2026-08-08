@@ -150,7 +150,7 @@ class WorkerManager:
             "tunnel_url": w.tunnel_url,
             "status": w.status,
             "current_job_id": w.current_job_id,
-            "last_heartbeat_at": w.last_heartbeat_at.isoformat() if w.last_heartbeat_at else None,
+            "last_heartbeat_at": db.utc_iso(w.last_heartbeat_at),
             "last_error": w.last_error,
         }
 

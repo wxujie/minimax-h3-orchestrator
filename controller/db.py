@@ -31,6 +31,20 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def utc_iso(dt: datetime | None = None) -> str | None:
+    """Render a timestamp as an explicit-UTC ISO 8601 string (ends in ``Z``).
+
+    SQLite drops tzinfo when a ``DateTime`` round-trips through it, so values
+    read back are naive but represent UTC anyway. Emitting an explicit offset
+    keeps browsers (``new Date(...)``) from reinterpreting them as local time.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 class Account(Base):
     __tablename__ = "accounts"
     id = Column(String, primary_key=True)

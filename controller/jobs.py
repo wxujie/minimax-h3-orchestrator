@@ -99,7 +99,7 @@ class JobManager:
             "job_id": j.id,
             "status": j.status,
             "priority": j.priority,
-            "created_at": j.created_at.isoformat() if j.created_at else None,
+            "created_at": db.utc_iso(j.created_at),
             "worker_id": j.worker_id,
             "account_id": j.account_id,
             "error_class": j.error_class,
