@@ -7,7 +7,9 @@ python-dotenv>=1.0
 sqlalchemy>=2.0
 python-multipart>=0.0.9
 
-# Kaggle official CLI (kaggle_manager)
+# Kaggle official CLI (kaggle_manager). Works with the modern 2.x client; the
+# manager injects both the legacy (KAGGLE_USERNAME/KAGGLE_KEY) and the 2.x
+# (KAGGLE_API_TOKEN) env vars so either credential style authenticates.
 kaggle>=1.6
 
 # Testing

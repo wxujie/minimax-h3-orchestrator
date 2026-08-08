@@ -19,6 +19,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 import tempfile
 from dataclasses import dataclass
@@ -69,19 +70,35 @@ class KaggleManager:
 
     # ---------------- env management ----------------
     def _env(self, extra: Optional[dict] = None) -> dict:
-        """Environment with Kaggle credentials set in-memory only."""
+        """Environment with Kaggle credentials set in-memory only.
+
+        Injects both auth models so the manager works regardless of which
+        ``kaggle`` CLI is installed: the modern 2.x client reads
+        ``KAGGLE_API_TOKEN`` (a settings token), while the legacy 1.x client
+        reads ``KAGGLE_USERNAME``/``KAGGLE_KEY``.
+        """
         env = dict(os.environ)
         env["KAGGLE_USERNAME"] = self.account.username
         env["KAGGLE_KEY"] = self.account.key
+        env["KAGGLE_API_TOKEN"] = self.account.key
         if extra:
             env.update(extra)
         return env
 
+    def _cmd(self, args: list[str]) -> list[str]:
+        """Command vector for the kaggle CLI.
+
+        Prefer the on-PATH script, but fall back to ``python -m kaggle.cli`` so
+        the installed package always resolves even when ``.venv/bin`` is not on
+        the subprocess PATH (e.g. launched outside an activated shell).
+        """
+        if self._bin:
+            return [self._bin] + args
+        return [sys.executable, "-m", "kaggle.cli"] + args
+
     def _run(self, args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
         """Run a kaggle CLI command with credentials injected, no secret on argv."""
-        if not self._bin:
-            raise RuntimeError("kaggle CLI not installed (pip install kaggle)")
-        cmd = [self._bin] + args
+        cmd = self._cmd(args)
         log.debug("kaggle cmd=%s", " ".join(cmd))  # args never contain the key
         return subprocess.run(
             cmd,
