@@ -39,6 +39,7 @@ _workflow_adapter = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
+    _init()   # build the store + managers and start the scheduler on server startup
     log.info("controller_starting")
     yield
     if _scheduler:
@@ -53,7 +54,6 @@ def create_app() -> FastAPI:
     from .api import workers as api_workers
 
     app = FastAPI(title="MiniMax H3 Orchestrator", version="1.0.0", lifespan=lifespan)
-    _init()
 
     app.include_router(api_jobs.router, prefix="/api/v1")
     app.include_router(api_workers.router, prefix="/api/v1")
@@ -157,3 +157,9 @@ def get_store():
 
 def get_scheduler() -> Scheduler:
     return _scheduler
+
+
+# Module-level app so the ASGI server can load `controller.main:app`.
+# Runtime init (store/scheduler) happens in `lifespan` on server startup, so
+# importing this module has no side effects.
+app = create_app()
