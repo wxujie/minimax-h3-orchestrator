@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniMax H3 Orchestrator</title>
+<style>
+  :root {
+    --bg:#0b0e14; --panel:#121722; --panel2:#0e141f; --line:#1e2636;
+    --fg:#d7e0ee; --muted:#7e8ba1; --accent:#4cc38a;
+    --red:#ef5b7a; --amber:#f4c25a; --blue:#6aa1ff; --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:16px 24px;border-bottom:1px solid var(--panel)}
+  header .dot{width:10px;height:10px;border-radius:50%;background:var(--accent);
+       box-shadow:0 0 10px var(--accent);animation:pulse 2.4s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  h1{font-size:16px;font-weight:600;margin:0;letter-spacing:.2px}
+  header .sub{color:var(--muted);font-size:12px;margin-left:auto}
+  main{padding:20px 24px;display:grid;gap:18px;max-width:1280px;margin:0 auto}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+  .stat{background:var(--panel);border:1px solid var(--panel);border-radius:10px;padding:14px 16px}
+  .stat .n{font:600 24px var(--mono,ui-monospace,monospace)}
+  .stat .l{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.6px;margin-top:4px}
+  .stat.green .n{color:var(--accent)} .stat.red .n{color:var(--red)}
+  .stat.am .n{color:var(--amber)} .stat.blue .n{color:var(--blue)}
+  .card{background:var(--panel);border:1px solid var(--panel);border-radius:10px;overflow:hidden}
+  .card h2{font-size:13px;margin:0;padding:12px 16px;border-bottom:1px solid var(--panel);
+         text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
+  table{width:100%;border-collapse:collapse;font-family:var(--mono,ui-monospace,monospace);font-size:12.5px}
+  th,td{text-align:left;padding:8px 16px;border-bottom:1px solid var(--panel)}
+  th{color:var(--muted);font-weight:500;text-transform:uppercase;letter-spacing:.6px;font-size:11px}
+  tr:last-child td{border-bottom:none}
+  .badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600}
+  .b-ok{background:rgba(76,201,138,.15);color:var(--accent)}
+  .b-run{background:rgba(78,136,255,.15);color:var(--blue)}
+  .b-queued{background:rgba(244,194,90,.15);color:var(--amber)}
+  .b-bad{background:rgba(239,91,122,.15);color:var(--red)}
+  .b-dim{background:rgba(126,139,161,.15);color:var(--muted)}
+  .muted{color:var(--muted)}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:860px){.two{grid-template-columns:1fr}}
+  #err{display:none;color:var(--red);padding:10px 16px;border:1px solid var(--red);border-radius:10px}
+  footer{color:var(--muted);font-size:11px;padding:0 24px 24px;max-width:1280px;margin:0 auto}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot"></span>
+  <h1>MiniMax H3 Orchestrator</h1>
+  <span class="sub" id="clock">—</span>
+</header>
+<main>
+  <div id="err"></div>
+  <section class="stats" id="stats">
+    <div class="stat green"><div class="n" id="s-ready">–</div><div class="l">Ready workers</div></div>
+    <div class="stat blue"><div class="n" id="s-busy">–</div><div class="l">Busy workers</div></div>
+    <div class="stat am"><div class="n" id="s-queued">–</div><div class="l">Queued jobs</div></div>
+    <div class="stat blue"><div class="n" id="s-nb">–</div><div class="l">Running notebooks</div></div>
+  </section>
+
+  <section class="two">
+    <div class="card"><h2>Jobs</h2>
+      <table id="jobs"><thead><tr>
+        <th>ID</th><th>Status</th><th>Worker</th><th>Created</th><th>Error</th>
+      </tr></thead><tbody></tbody></table></div>
+    <div class="card"><h2>Workers</h2>
+      <table id="workers"><thead><tr>
+        <th>ID</th><th>GPU</th><th>Status</th><th>Tunnel</th><th>Job</th>
+      </tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section class="card"><h2>Accounts</h2>
+    <table id="accounts"><thead><tr>
+      <th>ID</th><th>Enabled</th><th>Status</th><th>Notebooks</th><th>Quota</th>
+    </tr></thead><tbody></tbody></table></div>
+</main>
+<footer id="foot">controller unreachable</footer>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const API="/api/v1";
+const fmt=new Intl.RelativeTimeFormat("en",{numeric:"auto"});
+const ago=iso=>iso?fmt.format(Math.round((new Date(iso)-Date.now())/1000),"second"):"—";
+const esc=s=>(s??"").toString().replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function badge(st){
+  const map={"COMPLETED":"b-ok","READY":"b-ok","RUNNING":"b-run","STARTING":"b-run",
+             "QUEUED":"b-queued","RETRYING":"b-queued","FAILED":"b-bad","OFFLINE":"b-bad",
+             "CANCELLED":"b-dim","ERROR":"b-bad","NOTEBOOK_STARTING":"b-run","QUOTA_EXHAUSTED":"b-bad"};
+  const c=map[st]||"b-dim";
+  return `<span class="badge ${c}">${esc(st)}</span>`;
+}
+async function load(){
+  let sys,jobs,workers,accts;
+  try{
+    [sys,jobs,workers,accts]=await Promise.all([
+      fetch(API+"/system/status").then(r=>r.json()),
+      fetch(API+"/jobs").then(r=>r.json()),
+      fetch(API+"/workers").then(r=>r.json()),
+      fetch(API+"/accounts").then(r=>r.json()),
+    ]);
+  }catch(e){$("err").style.display="block";$("err").textContent="Controller unreachable: "+e;
+    $("foot").textContent="retrying…";return;}
+  $("err").style.display="none";
+  $("s-ready").textContent=sys.ready_workers; $("s-busy").textContent=sys.busy_workers;
+  $("s-queued").textContent=sys.queued_jobs; $("s-nb").textContent=sys.running_notebooks;
+  $("foot").textContent="live · last refresh "+new Date().toLocaleTimeString();
+
+  const jb=$("jobs").querySelector("tbody"); jb.innerHTML="";
+  (jobs||[]).slice(0,50).forEach(j=>{const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${esc(j.job_id)}</td><td>${badge(j.status)}</td>`+
+      `<td>${esc(j.worker_id||"—")}</td><td>${esc(j.created_at?ago(j.created_at):"—")}</td>`+
+      `<td class="muted">${esc(j.last_error||"")}</td>`; jb.appendChild(tr);});
+
+  const wb=$("workers").querySelector("tbody"); wb.innerHTML="";
+  (workers||[]).forEach(w=>{const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${esc(w.id)}</td><td>gpu ${w.gpu_index}</td><td>${badge(w.status)}</td>`+
+      `<td class="muted">${shortUrl(w.tunnel_url)}</td><td>${esc(w.current_job_id||"—")}</td>`;
+    wb.appendChild(tr);});
+
+  const ab=$("accounts").querySelector("tbody"); ab.innerHTML="";
+  (accts||[]).forEach(a=>{const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${esc(a.id)}</td><td>${a.enabled?"yes":"no"}</td><td>${badge(a.status)}</td>`+
+      `<td>${esc((a.notebooks||[]).length)}</td><td class="muted">${esc(a.quota_status||"")}</td>`;
+    ab.appendChild(tr);});
+}
+function shortUrl(u){return u?u.replace(/^https?:\/\//,"").slice(0,40)+"…":"—"}
+
+$("clock").textContent=new Date().toLocaleTimeString();
+setInterval(()=>{$("clock").textContent=new Date().toLocaleTimeString();},1000);
+load();
+setInterval(load,4000);
+</script>
+</body>
+</html>

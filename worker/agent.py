@@ -1,0 +1,306 @@
+"""Worker agent: the authenticated control plane for one GPU's ComfyUI.
+
+Runs *inside the Kaggle notebook*, one process per GPU worker. The controller
+reaches this agent through the worker's Cloudflare tunnel. The agent talks only
+to its own local ComfyUI instance — ComfyUI itself is never exposed.
+
+Routes
+------
+    GET  /health                 liveness + state (unauthenticated *)
+    GET  /status                 detailed worker/GPU/ComfyUI/tunnel status
+    POST /jobs                   create + run a video job
+    GET  /jobs/{id}              job status / progress
+    GET  /jobs/{id}/result       download the finished video
+    POST /jobs/{id}/cancel       abort a queued/running job
+    POST /shutdown               stop the tunnel for this worker
+
+    (*) /health intentionally needs no token so the controller's readiness
+        probe works while secrets are still being wired; it leaks only whether
+        ComfyUI and the tunnel are up, never secrets.
+"""
+from __future__ import annotations
+
+import hmac
+import os
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Callable, Optional
+
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from . import cloudflare as cf
+from . import comfy_client
+from . import gpu as gpumod
+
+JOB_QUEUED, JOB_RUNNING, JOB_DONE, JOB_FAILED, JOB_CANCELLED = (
+    "QUEUED", "RUNNING", "DONE", "FAILED", "CANCELLED"
+)
+
+
+@dataclass
+class WorkerSpec:
+    """A worker's immutable identity + per-worker paths (from notebook env)."""
+
+    worker_name: str
+    gpu_index: int
+    comfy_port: int
+    agent_port: int
+    secret: str
+    tunnel_log_path: str
+    input_dir: str
+    output_dir: str
+    job_timeout_s: float = 3600.0
+
+    @property
+    def comfy_base_url(self) -> str:
+        return f"http://127.0.0.1:{self.comfy_port}"
+
+
+class JobRequest(BaseModel):
+    prompt_text: str
+    duration: float = 2.0
+    width: Optional[int] = None
+    height: Optional[int] = None
+    seed: Optional[int] = None
+    first_frame: Optional[str] = None
+    last_frame: Optional[str] = None
+    model_overrides: Optional[dict] = None
+
+
+@dataclass
+class RunnableJob:
+    id: str
+    payload: JobRequest
+    status: str = JOB_QUEUED
+    prompt_id: Optional[str] = None
+    created: float = field(default_factory=time.time)
+    progress: int = 0
+    error: str = ""
+    result_path: Optional[str] = None
+
+
+class WorkerAgent:
+    """One GPU's agent. Bound to exactly one local ComfyUI instance."""
+
+    def __init__(self, spec: WorkerSpec,
+                 workflow_factory: Callable[..., dict]) -> None:
+        self.spec = spec
+        self.comfy = comfy_client.ComfyClient(base_url=spec.comfy_base_url)
+        self.workflow_factory = workflow_factory
+        self.secret = spec.secret or os.environ.get("WORKER_AUTH_SECRET", "")
+        self.tunnel = cf.QuickTunnel(spec.agent_port, spec.tunnel_log_path,
+                                     bin_path=os.environ.get("CLOUDFLARED_BIN", "/tmp/cloudflared"))
+        self.lock = threading.Lock()
+        self.jobs: dict[str, RunnableJob] = {}
+        self.app = self._build_app()
+
+    # ------------------------------------------------------------- security --
+    def _auth(self, authorization: Optional[str]) -> bool:
+        if not self.secret:
+            return True
+        if not authorization or not authorization.lower().startswith("bearer "):
+            return False
+        token = authorization.split(" ", 1)[1].strip()
+        return hmac.compare_digest(token, self.secret)
+
+    def _require(self, authorization: Optional[str]) -> None:
+        if not self._auth(authorization):
+            raise HTTPException(status_code=401, detail="invalid worker token")
+
+    # ----------------------------------------------------------------- is_alive
+    def _comfy_ok(self) -> bool:
+        try:
+            self.comfy.health()
+            return True
+        except Exception:
+            return False
+
+    # --------------------------------------------------------------- tunnels --
+    def start_tunnel(self, timeout: int = 30) -> Optional[str]:
+        self.tunnel.start()
+        return self.tunnel.wait_for_url(timeout=timeout)
+
+    def tunnel_ok(self) -> bool:
+        return self.tunnel.is_alive()
+
+    # ------------------------------------------------------------- routes ----
+    def _build_app(self) -> FastAPI:
+        app = FastAPI(title=f"{self.spec.worker_name}", version="1.0")
+
+        @app.get("/health")
+        def health():
+            ok = self._comfy_ok()
+            return {
+                "worker_id": self.spec.worker_name,
+                "gpu": self.spec.gpu_index,
+                "status": "ready" if (ok and self.tunnel_ok()) else "starting",
+                "comfyui": ok,
+                "cloudflare": self.tunnel_ok(),
+                "public_url": self.tunnel.public_url,
+            }
+
+        @app.get("/status")
+        def worker_status(authorization: Optional[str] = Header(default=None)):
+            self._require(authorization)
+            return {
+                "worker_id": self.spec.worker_name,
+                "gpu": self._gpu(),
+                "comfyui_ok": self._comfy_ok(),
+                "tunnel_ok": self.tunnel_ok(),
+                "tunnel_url": self.tunnel.public_url,
+                "busy": bool(self.jobs),
+                "running": [j.id for j in self.jobs.values()
+                            if j.status == JOB_RUNNING],
+            }
+
+        @app.post("/jobs")
+        def run_job(job: JobRequest,
+                    authorization: Optional[str] = Header(default=None)):
+            self._require(authorization)
+            with self.lock:
+                busy = any(j.status == JOB_RUNNING for j in self.jobs.values())
+                if busy:
+                    raise HTTPException(status_code=409, detail="worker busy")
+                job_id = f"{self.spec.worker_name}-{uuid.uuid4().hex[:8]}"
+                self.jobs[job_id] = RunnableJob(id=job_id, payload=job)
+            threading.Thread(target=self._execute, args=(job_id,), daemon=True).start()
+            return {"job_id": job_id, "status": "STARTING"}
+
+        @app.post("/jobs/input")
+        async def upload_input(request: Request,
+                               authorization: Optional[str] = Header(default=None)):
+            """Stage a client file (image) into the worker's input dir.
+
+            Body: multipart with one field named ``file``. Filename is
+            sanitized and written under ``input_dir`` only (no traversal).
+            Returns the safe name to reference in JobRequest.
+            """
+            self._require(authorization)
+            form = await request.form()
+            up = form.get("file")
+            if up is None:
+                raise HTTPException(status_code=400, detail="missing file field")
+            import os.path as _p
+            base = _p.basename(up.filename or "file.png")[:120]
+            os.makedirs(self.spec.input_dir, exist_ok=True)
+            safe = _p.join(self.spec.input_dir, base)
+            with open(safe, "wb") as f:
+                f.write(up.file.read())
+            return {"filename": base}
+
+        @app.get("/jobs/{job_id}")
+        def job_status(job_id: str, authorization: Optional[str] = Header(default=None)):
+            self._require(authorization)
+            rj = self.jobs.get(job_id)
+            if not rj:
+                raise HTTPException(status_code=404, detail="unknown job")
+            return {"job_id": job_id, "status": rj.status,
+                    "progress": rj.progress, "error": rj.error}
+
+        @app.get("/jobs/{job_id}/result")
+        def job_result(job_id: str, authorization: Optional[str] = Header(default=None)):
+            self._require(authorization)
+            rj = self.jobs.get(job_id)
+            if not rj or rj.status != JOB_DONE or not rj.result_path:
+                raise HTTPException(status_code=404, detail="result not ready")
+            if not os.path.exists(rj.result_path):
+                raise HTTPException(status_code=404, detail="result file missing")
+            return StreamingResponse(
+                open(rj.result_path, "rb"),
+                media_type="video/mp4",
+                headers={"Content-Disposition":
+                         f'attachment; filename="{os.path.basename(rj.result_path)}"'},
+            )
+
+        @app.post("/jobs/{job_id}/cancel")
+        def job_cancel(job_id: str, authorization: Optional[str] = Header(default=None)):
+            self._require(authorization)
+            rj = self.jobs.get(job_id)
+            if not rj:
+                raise HTTPException(status_code=404, detail="unknown job")
+            if rj.status == JOB_RUNNING and rj.prompt_id:
+                self.comfy.cancel(rj.prompt_id)
+            rj.status = JOB_CANCELLED
+            return {"job_id": job_id, "status": "CANCELLED"}
+
+        @app.post("/shutdown")
+        def shutdown(authorization: Optional[str] = Header(default=None)):
+            self._require(authorization)
+            self.tunnel.stop()
+            return {"ok": True}
+
+        return app
+
+    # --------------------------------------------------------------- helpers --
+    def _gpu(self) -> dict:
+        gpus = gpumod.list_gpus()
+        if gpus and self.spec.gpu_index < len(gpus):
+            return gpus[self.spec.gpu_index].to_dict()
+        return {"index": self.spec.gpu_index, "name": "unknown"}
+
+    def _stage_path(self, raw: Optional[str]) -> Optional[str]:
+        """Map a client filename to a staged input file in the work dir."""
+        if not raw:
+            return None
+        import os
+        base = os.path.basename(raw)  # sanitize: no traversal
+        candidate = os.path.join(self.spec.input_dir, base)
+        return candidate if os.path.exists(candidate) else None
+
+    def _execute(self, job_id: str) -> None:
+        rj = self.jobs[job_id]
+        rj.status = JOB_RUNNING
+        try:
+            p = rj.payload
+            first_local = self._stage_path(p.first_frame)
+            last_local = self._stage_path(p.last_frame) if p.last_frame else None
+            if not first_local:
+                raise comfy_client.ComfyError(
+                    "first_frame not present in staged input (was it uploaded?)",
+                    transient=False)
+            # Upload staged files into ComfyUI; get back its filename.
+            first_comfy = self.comfy.upload_image(first_local)
+            last_comfy = (self.comfy.upload_image(last_local)
+                          if last_local else first_comfy)
+            graph = self.workflow_factory(
+                prompt_text=p.prompt_text, duration=p.duration,
+                width=p.width, height=p.height, seed=p.seed,
+                first_frame=first_comfy, last_frame=last_comfy,
+                model_overrides=p.model_overrides,
+            )
+            rj.prompt_id = self.comfy.submit_prompt(graph)
+        except comfy_client.ComfyError as e:
+            rj.status = JOB_FAILED
+            rj.error = e.message
+            return
+        except Exception as e:  # noqa: BLE001
+            rj.status = JOB_FAILED
+            rj.error = str(e)
+            return
+
+        try:
+            history = self.comfy.wait_for_history(
+                rj.prompt_id, timeout_s=self.spec.job_timeout_s)
+            rj.progress = 100
+            out_dir = os.path.join(self.spec.output_dir, job_id)
+            path = self.comfy.download_output(history, out_dir)
+            if path is None:
+                rj.status, rj.error = JOB_FAILED, "no video output produced"
+                return
+            rj.result_path = path
+            rj.status = JOB_DONE
+        except comfy_client.ComfyError as e:
+            rj.status = JOB_FAILED
+            rj.error = e.message
+
+
+class InputAgent:  # keep a stable public name
+    pass
+
+
+# Compatibility alias used by some notebook snippets.
+make_agent = WorkerAgent
