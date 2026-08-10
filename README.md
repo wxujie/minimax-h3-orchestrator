@@ -109,13 +109,21 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env`. The two things you *must* set before anything actually renders:
+Edit `.env`. The things you *must* set before anything actually renders:
 
 | Variable | What to put |
 |----------|-------------|
 | `KAGGLE_ACCOUNT_1_USERNAME` | Your Kaggle username |
 | `KAGGLE_ACCOUNT_1_KEY` | Your Kaggle API key |
 | `WORKER_AUTH_SECRET` | A long random string shared between controller and agents; protects the agent→controller `/agents/register` handshake |
+| `CONTROLLER_PUBLIC_URL` | Publicly reachable root of **this** controller, e.g. `https://<host>:8000`. The pushed Kaggle notebook clones the repo and POSTs `/api/v1/agents/register` here when it boots, so it must be reachable **from Kaggle** (a deployed host or a controller-side tunnel). Without it, the scheduler won't start notebooks — a notebook it can't reach could never round-trip. |
+
+`ORCHESTRATOR_REPO_URL` (default `https://github.com/msaadakram/minimax-h3-orchestrator`)
+is what the notebook clones to load the worker package + workflow — only override it
+if you fork the repo. Add `KAGGLE_ACCOUNT_2_*`, `KAGGLE_ACCOUNT_3_*`, … blocks for
+more accounts — the count is auto-discovered. Every other setting has a sensible
+default (host, ports, poll intervals, retries, retention); see `.env.example` and
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
 Add `KAGGLE_ACCOUNT_2_*`, `KAGGLE_ACCOUNT_3_*`, … blocks for more accounts — the
 count is auto-discovered. Every other setting has a sensible default (host,
@@ -239,9 +247,15 @@ The controlling idea is **lazy, conservative** provisioning:
 2. Worker free? → dispatch immediately.
 3. No worker free → start a notebook on the next enabled, non-quota account,
    unless the pool is already at `MAX_CONCURRENT_NOTEBOOKS`.
-4. When the notebook boots, its worker agent opens a Cloudflare tunnel and tells
-   the controller `POST /api/v1/agents/register` (Bearer-authed).
-5. The controller marks the two placeholder workers **READY** and drains the queue.
+4. At push time the controller builds the notebook (the ComfyUI bootstrap +
+   [`worker/runner.py`](worker/runner.py) as the last cell). When it boots, the
+   runner cell clones the orchestrator repo, injects this notebook's identity
+   (`NOTEBOOK_ID` / `CONTROLLER_PUBLIC_URL` / `WORKER_AUTH_SECRET`), serves a
+   small authenticated agent per GPU, opens a Cloudflare tunnel, and calls
+   `POST /api/v1/agents/register` (Bearer-authed).
+5. The controller verifies each agent's `/health` through the tunnel, marks the
+   placeholder workers **READY**, and drains the queue — now handing the job to
+   the agent, which drives its local ComfyUI to render the video.
 
 Scale **up** by adding more `KAGGLE_ACCOUNT_N_*` blocks; cap spend by lowering
 `MAX_CONCURRENT_NOTEBOOKS`. The scheduler stays conservative because the Kaggle
@@ -252,10 +266,15 @@ API does not expose real-time GPU quota.
 ## Running the worker agent
 
 The worker side isn't a separate install — it's the notebook pushed to Kaggle
-(`notebooks/minimax-h3-comfyui.ipynb`). Inside, the agent reads the env the
-controller set, points at its local ComfyUI, starts its own small FastAPI server,
-opens a `quick` (auto `trycloudflare.com`) or `named` tunnel, and registers with
-the controller.
+(`notebooks/minimax-h3-comfyui.ipynb`). At push time the controller appends
+[`worker/runner.py`](worker/runner.py) to that notebook. When the notebook
+boots, the runner reads the identity the controller embedded (`NOTEBOOK_ID`,
+`CONTROLLER_PUBLIC_URL`, `WORKER_AUTH_SECRET`), clones the orchestrator repo for
+the worker package + workflow adapter, serves a small authenticated FastAPI
+agent per GPU, opens a `quick` (auto `trycloudflare.com`) or `named` tunnel, and blocks to keep
+the session alive so the controller can keep dispatching jobs through it. It
+registers each worker with the controller, then re-registers on a recycled quick
+tunnel so the worker rejoins automatically.
 
 `TUNNEL_MODE=quick` is zero-config for a private experiment — the controller
 reconciles the random URL on each `/health`. For production, use `TUNNEL_MODE=named`

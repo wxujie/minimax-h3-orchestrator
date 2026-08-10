@@ -124,6 +124,19 @@ class Settings:
 
     workflow_path: Path = field(default_factory=lambda: Path(_env("WORKFLOW_PATH", "./workflows/workflow.json")))
     notebook_path: Path = field(default_factory=lambda: Path(_env("NOTEBOOK_PATH", "./notebooks/minimax-h3-comfyui.ipynb")))
+    # Publicly reachable root of THIS controller, used by the pushed notebook to
+    # POST /api/v1/agents/register back. Required for real notebook registration;
+    # must be reachable from Kaggle (a deployed host or a controller-side tunnel).
+    controller_public_url: str = field(
+        default_factory=lambda: _env("CONTROLLER_PUBLIC_URL", "")
+    )
+    # The notebook runner clones this repo to load the worker package + workflow.
+    orchestrator_repo_url: str = field(
+        default_factory=lambda: _env(
+            "ORCHESTRATOR_REPO_URL",
+            "https://github.com/msaadakram/minimax-h3-orchestrator",
+        )
+    )
 
     # Kaggle credentials, in-memory only.
     accounts: List[AccountConfig] = field(default_factory=_parse_accounts)

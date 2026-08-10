@@ -52,7 +52,7 @@ class KaggleManager:
     _metadata = {
         "id": None,  # filled with owner/slug
         "title": "minimax-h3-comfyui-orchestrator",
-        "code_file": "minimax-h3-comfyui.py",
+        "code_file": "minimax-h3-comfyui.ipynb",
         "language": "python",
         "kernel_type": "notebook",
         "is_private": True,
@@ -138,9 +138,10 @@ class KaggleManager:
     def ensure_notebook(self, slug: str, notebook_json: dict) -> bool:
         """Create-or-update a private kernel via `kaggle kernels push`.
 
-        ``notebook_json`` is the Kaggle notebook-document (cells) payload. We
-        write it into a temp dir with the metadata + code, push, and return
-        True if the kernel exists now. The first push may return non-zero for a
+        ``notebook_json`` is the actual Kaggle notebook-document loaded from the
+        builder (the ComfyUI bootstrap + registered-worker runner). We write it
+        into a temp dir with the metadata + the ipynb, push, and return True if
+        the kernel exists now. The first push may return non-zero for a
         brand-new kernel while still creating it; we treat a subsequent
         ``kernels list`` match as success.
         """
@@ -149,10 +150,9 @@ class KaggleManager:
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             meta_path = td / "kernel-metadata.json"
-            code_path = td / "minimax-h3-comfyui.py"
+            code_path = td / d["code_file"]
             meta_path.write_text(json.dumps(d, indent=2))
-            # The notebook JSON carries all logic; the code file only prints.
-            code_path.write_text("# Orchestrator notebook: see ipynb content.\n")
+            code_path.write_text(json.dumps(notebook_json, indent=1))
             r = self._run(
                 ["kernels", "push", "--path", str(td)],
                 timeout=180,

@@ -89,17 +89,39 @@ class KaggleProvider:
             cap = mgr.capacity()
             if not cap.usable:
                 return False
+            body = build_pushed_notebook(notebook_name)
+            if body is None:
+                return False
             slug = f"{ac.username}/{notebook_name}"
-            return mgr.ensure_notebook(slug, DEFAULT_NOTEBOOK_BODY())
+            return mgr.ensure_notebook(slug, body)
         except Exception as exc:  # noqa: BLE001
             log.error("kaggle_start_notebook_failed account=%s err=%s",
                       account_id, exc)
             return False
 
 
-def DEFAULT_NOTEBOOK_BODY() -> dict:
-    """Sketch of the notebook cell-document (filled by build at run time)."""
-    return {"cells": []}
+def build_pushed_notebook(notebook_name: str) -> Optional[dict]:
+    """Build the ipynb that is actually pushed, with this notebook's identity.
+
+    ``notebook_name`` becomes the controller-side ``NOTEBOOK_ID`` the worker
+    runner reports when it registers (matching the placeholder rows the
+    scheduler provisioned). Returns None if the controller identity needed for
+    registration (the public URL) is unset, since such a notebook could never
+    round-trip.
+    """
+    from .notebook_builder import build_notebook  # local import
+
+    if settings is None or not settings.controller_public_url:
+        log.warning("controller_public_url not configured; cannot build registerable "
+                    "notebook (set CONTROLLER_PUBLIC_URL)")
+        return None
+    return build_notebook(
+        notebook_id=notebook_name,
+        controller_public_url=settings.controller_public_url,
+        worker_auth_secret=settings.worker_auth_secret,
+        repo_url=settings.orchestrator_repo_url,
+        template_path=settings.notebook_path,
+    )
 
 
 def _init() -> None:

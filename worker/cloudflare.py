@@ -71,7 +71,10 @@ class QuickTunnel:
     def start(self) -> None:
         self.stop()
         os.makedirs(os.path.dirname(self.log_path) or ".", exist_ok=True)
-        with open(self.log_path, "a", encoding="utf-8") as f:
+        # Truncate ('w') so parse_quick_url only ever sees URLs from THIS tunnel
+        # instance. With append ('a') a prior run's URL lingers in the log and a
+        # restart would wrongly report the old (possibly dead) tunnel URL.
+        with open(self.log_path, "w", encoding="utf-8") as f:
             self.proc = subprocess.Popen(
                 [self.bin, "tunnel", "--url", f"http://127.0.0.1:{self.local_port}",
                  "--no-autoupdate"],
