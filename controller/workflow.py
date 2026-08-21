@@ -180,9 +180,12 @@ class WorkflowAdapter:
 
         loaders = {
             N_UNET: {"class_type": "UNETLoader",
-                     "inputs": {"unet_name": model["unet_name"]}},
+                     "inputs": {"unet_name": model["unet_name"],
+                                 "weight_dtype": "default"}},
             N_CLIP: {"class_type": "CLIPLoader",
-                     "inputs": {"clip_name": model["clip_name"]}},
+                     "inputs": {"clip_name": model["clip_name"],
+                                 "type": "minimax",
+                                 "device": "default"}},
             N_VAE_V: {"class_type": "VAELoader",
                       "inputs": {"vae_name": model["vae_name"]}},
             N_VAE_A: {"class_type": "VAELoader",
