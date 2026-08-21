@@ -122,7 +122,7 @@ class WorkerAgent:
     # --------------------------------------------------------------- tunnels --
     def start_tunnel(self, timeout: int = 30) -> Optional[str]:
         self.tunnel.start()
-        return self.tunnel.wait_for_url(timeout=timeout)
+        return self.tunnel.wait_for_url(timeout_s=timeout)
 
     def tunnel_ok(self) -> bool:
         return self.tunnel.is_alive()

@@ -57,6 +57,7 @@ class KaggleManager:
         "kernel_type": "notebook",
         "is_private": True,
         "enable_gpu": True,
+        "machine_shape": "NvidiaTeslaT4",
         "enable_internet": True,
         "competition_sources": [],
         "dataset_sources": [],
@@ -147,6 +148,10 @@ class KaggleManager:
         """
         d = self._metadata.copy()
         d["id"] = slug
+        # Kaggle rejects pushes where the title's slug doesn't resolve to the
+        # id's basename (409 Conflict). The id is `<owner>/<notebook_name>`,
+        # so make the title equal to `<notebook_name>` so the two match.
+        d["title"] = slug.split("/", 1)[-1]
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             meta_path = td / "kernel-metadata.json"
