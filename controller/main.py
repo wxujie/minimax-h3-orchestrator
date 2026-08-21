@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 
 from . import db
@@ -135,7 +135,7 @@ def _init() -> None:
     _scheduler.start()
 
 
-async def agent_register(request, authorization: str = Header(default="")):
+async def agent_register(request: Request, authorization: str = Header(default="")):
     """Worker agent calls this once its Cloudflare tunnel is up."""
     _require_token(authorization)
     payload = await request.json()
