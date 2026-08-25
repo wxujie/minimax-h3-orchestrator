@@ -70,8 +70,9 @@ def test_real_template_gets_runner_cell():
         notebook_id="nb-1", controller_public_url="https://c.example.com",
         worker_auth_secret="s", template_path=_P("notebooks/minimax-h3-comfyui.ipynb"),
     )
-    # reference notebook has 23 cells; +pip-install +runner = 25
-    assert len(doc["cells"]) == 25
+    # reference notebook grew to 24 cells (ref2va unet + turbo lora added);
+    # +pip-install +runner = 26
+    assert len(doc["cells"]) == 26
     _runner_cell(doc)
 
 

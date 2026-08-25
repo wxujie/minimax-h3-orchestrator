@@ -59,24 +59,31 @@ def build_workflow_factory(repo_root: Optional[Path] = None):
     layout produced by a runtime clone.
     """
     from controller.workflow import WorkflowAdapter  # lazy import
+    from controller.workflow_r2v import R2VWorkflowAdapter
 
-    probe = ("workflows/workflow.json", "minimax-h3-orchestrator/workflows/workflow.json")
-    wf_path: Optional[Path] = None
-    if repo_root is not None:
-        wf_path = repo_root / "workflows" / "workflow.json"
-    else:
-        for rel in probe:
-            p = Path(rel)
-            if p.exists():
-                wf_path = p
-                break
-    if wf_path is None or not wf_path.exists():
-        raise RuntimeError(f"workflow.json not found (workflow_path not passed)")
+    def _find(rel: str) -> Path:
+        if repo_root is not None:
+            return repo_root / "workflows" / rel
+        return Path(f"workflows/{rel}")
 
-    adapter = WorkflowAdapter(path=wf_path)
+    fl2va_path = _find("workflow.json")
+    r2v_path = _find("workflow_r2v.json")
+    if not fl2va_path.exists():
+        raise RuntimeError(f"workflow.json not found at {fl2va_path}")
+
+    fl2va = WorkflowAdapter(path=fl2va_path)
+    r2v = R2VWorkflowAdapter(path=r2v_path) if r2v_path.exists() else None
 
     def workflow_factory(**kwargs: object) -> dict:
-        return adapter.build_prompt(**kwargs)
+        # Dispatch on the presence of R2V-only parameters.
+        if "ref_images" in kwargs or kwargs.get("mode") == "r2v":
+            if r2v is None:
+                raise RuntimeError("R2V workflow adapter not available")
+            kwargs.pop("mode", None)
+            return r2v.build_prompt(**kwargs)
+        kwargs.pop("mode", None)
+        kwargs.pop("ref_images", None)
+        return fl2va.build_prompt(**kwargs)
 
     return workflow_factory
 

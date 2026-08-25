@@ -48,6 +48,11 @@ class JobCreate(BaseModel):
     seed: Optional[int] = None
     first_frame: Optional[str] = None
     last_frame: Optional[str] = None
+    ref_images: Optional[list[str]] = None
+    turbo: bool = False
+    turbo_steps: Optional[int] = None
+    turbo_lora_strength: Optional[float] = None
+    workflow: str = "minimax-h3"
     model_overrides: Optional[dict] = None
     priority: int = 0
 
@@ -55,15 +60,26 @@ class JobCreate(BaseModel):
 @router.post("/jobs")
 def create_job_json(req: JobCreate):
     jobs, _ = _manager()
-    r = jobs.create(input_data={
+    input_data = {
         "prompt": req.prompt,
         "duration": req.duration,
         "width": req.width, "height": req.height,
         "seed": req.seed,
         "first_frame": req.first_frame, "last_frame": req.last_frame,
+        "ref_images": req.ref_images or [],
+        "turbo": req.turbo,
+        "turbo_steps": req.turbo_steps,
+        "turbo_lora_strength": req.turbo_lora_strength,
         "model_overrides": req.model_overrides or {},
-    }, priority=req.priority, max_retries=settings.max_job_retries)
-    log.info("job_created job_id=%s", r["job_id"])
+    }
+    r = jobs.create(
+        workflow=req.workflow,
+        input_data=input_data,
+        priority=req.priority,
+        max_retries=settings.max_job_retries,
+        ref_images=req.ref_images or None,
+    )
+    log.info("job_created job_id=%s workflow=%s", r["job_id"], req.workflow)
     return r
 
 

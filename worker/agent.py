@@ -68,6 +68,11 @@ class JobRequest(BaseModel):
     seed: Optional[int] = None
     first_frame: Optional[str] = None
     last_frame: Optional[str] = None
+    ref_images: Optional[list[str]] = None
+    turbo: bool = False
+    turbo_steps: Optional[int] = None
+    turbo_lora_strength: Optional[float] = None
+    workflow: str = "minimax-h3"
     model_overrides: Optional[dict] = None
 
 
@@ -256,22 +261,39 @@ class WorkerAgent:
         rj.status = JOB_RUNNING
         try:
             p = rj.payload
-            first_local = self._stage_path(p.first_frame)
-            last_local = self._stage_path(p.last_frame) if p.last_frame else None
-            if not first_local:
-                raise comfy_client.ComfyError(
-                    "first_frame not present in staged input (was it uploaded?)",
-                    transient=False)
-            # Upload staged files into ComfyUI; get back its filename.
-            first_comfy = self.comfy.upload_image(first_local)
-            last_comfy = (self.comfy.upload_image(last_local)
-                          if last_local else first_comfy)
-            graph = self.workflow_factory(
-                prompt_text=p.prompt_text, duration=p.duration,
-                width=p.width, height=p.height, seed=p.seed,
-                first_frame=first_comfy, last_frame=last_comfy,
-                model_overrides=p.model_overrides,
-            )
+            if p.workflow == "minimax-h3-r2v":
+                # Reference-to-Video: stage + upload ref images, call R2V factory.
+                ref_comfy = []
+                for raw in (p.ref_images or []):
+                    local = self._stage_path(raw)
+                    if local:
+                        ref_comfy.append(self.comfy.upload_image(local))
+                graph = self.workflow_factory(
+                    prompt_text=p.prompt_text, duration=p.duration,
+                    width=p.width, height=p.height, seed=p.seed,
+                    ref_images=ref_comfy,
+                    turbo=p.turbo,
+                    turbo_steps=p.turbo_steps,
+                    turbo_lora_strength=p.turbo_lora_strength,
+                    model_overrides=p.model_overrides,
+                )
+            else:
+                first_local = self._stage_path(p.first_frame)
+                last_local = self._stage_path(p.last_frame) if p.last_frame else None
+                if not first_local:
+                    raise comfy_client.ComfyError(
+                        "first_frame not present in staged input (was it uploaded?)",
+                        transient=False)
+                # Upload staged files into ComfyUI; get back its filename.
+                first_comfy = self.comfy.upload_image(first_local)
+                last_comfy = (self.comfy.upload_image(last_local)
+                              if last_local else first_comfy)
+                graph = self.workflow_factory(
+                    prompt_text=p.prompt_text, duration=p.duration,
+                    width=p.width, height=p.height, seed=p.seed,
+                    first_frame=first_comfy, last_frame=last_comfy,
+                    model_overrides=p.model_overrides,
+                )
             rj.prompt_id = self.comfy.submit_prompt(graph)
         except comfy_client.ComfyError as e:
             rj.status = JOB_FAILED

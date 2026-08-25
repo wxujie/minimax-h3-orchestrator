@@ -160,8 +160,9 @@ class Scheduler:
         return True
 
     def _submit(self, job: dict, client: WorkerClient, worker: dict) -> str:
-        """Stage frame files to the worker, then submit; returns remote job id."""
+        """Stage frame/ref files to the worker, then submit; returns remote job id."""
         inp = job.get("input") or {}
+        workflow = job.get("workflow", "minimax-h3")
         staged = {}
         for key in ("first_frame", "last_frame"):
             raw = inp.get(key)
@@ -171,9 +172,7 @@ class Scheduler:
             local = self.storage.upload_path(fname)
             if self.storage.exists(local):
                 staged[key] = self._upload_to_worker(client, local)
-        if not staged.get("first_frame"):
-            raise WorkerClientError(
-                "first_frame not provided or missing on disk", transient=False)
+
         payload = {
             "prompt_text": inp.get("prompt", ""),
             "duration": inp.get("duration", 2.0),
@@ -182,7 +181,24 @@ class Scheduler:
             "first_frame": staged.get("first_frame"),
             "last_frame": staged.get("last_frame") or staged.get("first_frame"),
             "model_overrides": inp.get("model_overrides") or {},
+            "workflow": workflow,
         }
+
+        # R2V mode: stage + upload reference images, toggle turbo.
+        if workflow == "minimax-h3-r2v":
+            ref_names = []
+            for raw in (inp.get("ref_images") or []):
+                fname = _safe(str(raw))
+                local = self.storage.upload_path(fname)
+                if self.storage.exists(local):
+                    ref_names.append(self._upload_to_worker(client, local))
+            payload["ref_images"] = ref_names
+            payload["turbo"] = bool(inp.get("turbo", False))
+            payload["turbo_steps"] = inp.get("turbo_steps")
+            payload["turbo_lora_strength"] = inp.get("turbo_lora_strength")
+        elif not staged.get("first_frame"):
+            raise WorkerClientError(
+                "first_frame not provided or missing on disk", transient=False)
         return client.submit(payload)["job_id"]
 
     def _upload_to_worker(self, client: WorkerClient, path) -> str:

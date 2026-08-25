@@ -39,9 +39,13 @@ class JobManager:
     # ----------------------------------------------------------------- create --
     def create(self, *, workflow: str = "minimax-h3",
                input_data: dict, priority: int = 0,
-               max_retries: Optional[int] = None) -> dict:
+               max_retries: Optional[int] = None,
+               ref_images: Optional[list] = None) -> dict:
         job_id = new_job_id()
         with self.store.session() as s:
+            if ref_images:
+                input_data = dict(input_data)
+                input_data["ref_images"] = list(ref_images)
             job = db.Job(
                 id=job_id,
                 status=JobStatus.QUEUED.value,
