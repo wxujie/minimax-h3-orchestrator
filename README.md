@@ -72,13 +72,14 @@ Design facts worth knowing up front:
 
 | Path | What it is |
 |------|------------|
-| `controller/` | Scheduler, job/worker/account registries, storage, workflow adapter, Kaggle + FastAPI layer |
+| `controller/` | Scheduler, job/worker/account registries, storage, workflow adapters, Kaggle + FastAPI layer |
 | `worker/` | Per-GPU agent that runs inside a notebook (ComfyUI client, Cloudflare tunnel) |
 | `client/sdk.py` | Python SDK for creating / polling / downloading video jobs |
 | `web/index.html` | Live dashboard, served at `/dashboard/` |
 | `workflows/workflow.json` | The `MiniMaxH3ImageToVideo` ComfyUI subgraph (editable JSON) |
+| `workflows/workflow_r2v.json` | The `MiniMaxH3ReferenceToVideo` ComfyUI template (read by the R2V adapter) |
 | `notebooks/minimax-h3-comfyui.ipynb` | The notebook pushed to Kaggle |
-| `tests/` | 36 in-process tests: scheduler, worker agent, workflow, storage, API, SDK |
+| `tests/` | In-process tests: scheduler, worker agent, workflow (FL2VA + R2V), storage, API, SDK |
 
 ---
 
@@ -227,6 +228,77 @@ shields the agent→controller registration handshake only. Protect the controll
 with a private network or an auth reverse proxy before exposing it (see
 [Security notes](#security-notes)). The finished `.mp4` is streamed from
 `GET /jobs/{id}/result` only once the job is `COMPLETED` (a `409` otherwise).
+
+---
+
+## Reference-to-Video (R2V) with Turbo LoRA
+
+In addition to the default first/last-frame image-to-video mode (FL2VA), the
+orchestrator ships a **Reference-to-Video** workflow backed by the official
+`MiniMaxH3ReferenceToVideo` node. R2V locks a character / style / motion from
+up to 3 reference images, and supports an optional **Turbo LoRA** that cuts
+sampling from 20 steps to 4 steps.
+
+### Workflow selection
+
+Set `"workflow": "minimax-h3-r2v"` in the job JSON. The controller, worker,
+and the `R2VWorkflowAdapter` (`controller/workflow_r2v.py`) then build the
+flat ComfyUI graph for the R2V node instead of the FL2VA one. The two modes
+use **different diffusion models**:
+
+| Mode | Core node | Unet |
+|------|-----------|------|
+| FL2VA (default) | `MiniMaxH3ImageToVideo` | `minimax_h3_fl2va_pruned_int8_convrot` |
+| R2V | `MiniMaxH3ReferenceToVideo` | `minimax_h3_ref2va_pruned_int8_convrot` |
+
+The R2V notebook cells download both the ref2va unet and the Turbo LoRA into
+`models/diffusion_models` and `models/loras` respectively.
+
+### Creating an R2V job (JSON)
+
+```bash
+curl -sS -X POST http://localhost:8000/api/v1/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "workflow": "minimax-h3-r2v",
+    "prompt": "anime cel-shaded style, the hero in the reference image leaps across neon rooftops, dynamic action, no text",
+    "duration": 5.0,
+    "turbo": true,
+    "ref_images": ["anime_ref.png"]
+  }'
+```
+
+`ref_images` holds filenames already staged under `storage/uploads/` (upload
+them with the `/jobs/multipart` endpoint, or drop them into the uploads dir).
+Up to 3 are wired into the R2V node as `ref_images.ref_image_0..2`. The prompt
+may reference them with `<Picture 1>`, `<Picture 2>`, … tags.
+
+### Turbo mode
+
+`turbo` routes the unet through `LoraLoaderModelOnly` with the official
+`minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors` LoRA and a
+`ComfySwitchNode`, dropping sampling from 20 steps to 4 (`turbo_steps`,
+default 4). Optional knobs:
+
+- `turbo_steps` — step count in turbo mode (default 4)
+- `turbo_lora_strength` — LoRA strength (default 1.0)
+- `ref_image_size` — `match` (faster, default) or `max` (best identity fidelity, several× slower)
+
+Turbo trades a little audio/motion quality for roughly 2× speed.
+
+### T4-safe default resolution
+
+The ref2va unet (≈20 GB int8) plus the qwen3vl CLIP, dual VAEs, and audio
+decoder exceed a **Tesla T4's 15 GB** VRAM at the native 1344×768 canvas,
+causing OOM / `no video output produced`. The R2V adapter therefore defaults
+to **832×480** when no `width`/`height` is passed. Explicit `width` + `height`
+still allow full resolution on larger GPUs (T4×2, A100, …). The same T4 safe
+size applies to FL2VA for consistency.
+
+> **Deploy note.** The Kaggle worker clones this repo once at notebook boot;
+> it does **not** hot-reload pushed code changes. Any change to the adapter or
+> worker logic requires restarting the Kaggle kernel (which re-downloads the
+> models). Controller-side fixes, however, take effect on controller restart.
 
 ---
 
