@@ -74,6 +74,12 @@ TURBO_LORA_STRENGTH = 1.0
 NORMAL_STEPS = 20
 TURBO_STEPS = 4
 
+# T4 (15GB VRAM) safe default resolution. The ref2va unet (~20GB int8) + CLIP
+# + dual VAE + audio decoder exceed T4 VRAM at the native 1344x768 canvas,
+# causing OOM / "no video output produced". 832x480 is the largest size that
+# renders reliably on T4. Bigger GPUs (T4x2/A100) can request full res.
+T4_SAFE_RESOLUTION = (832, 480)
+
 # model files (official Comfy-Org/MiniMax-H3 ref2va set)
 UNET_REF2VA = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
 CLIP_NAME = "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
@@ -329,7 +335,9 @@ class R2VWorkflowAdapter:
     def _resolve_resolution(self, width, height):
         w, h = width, height
         if w is None or h is None:
-            dw, dh = self.resolution
+            # Default to the T4-safe canvas instead of the template's native
+            # 1344x768, which OOMs the 15GB T4 with the ref2va model.
+            dw, dh = T4_SAFE_RESOLUTION if (w is None and h is None) else self.resolution
             w, h = w or dw, h or dh
         w = max(32, (int(round(w)) // 32) * 32)
         h = max(32, (int(round(h)) // 32) * 32)
