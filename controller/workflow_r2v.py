@@ -184,6 +184,7 @@ class R2VWorkflowAdapter:
         ref_images: Optional[list[str]] = None,
         ref_videos: Optional[list[str]] = None,
         ref_audios: Optional[list[str]] = None,
+        ref_image_size: str = "match",
         turbo: bool = False,
         turbo_steps: int = TURBO_STEPS,
         turbo_lora_strength: float = TURBO_LORA_STRENGTH,
@@ -205,6 +206,10 @@ class R2VWorkflowAdapter:
         frames = duration_to_frames(dur)
         w, h = self._resolve_resolution(width, height)
         seed_val = seed if seed is not None else 0
+        if turbo_steps is None:
+            turbo_steps = TURBO_STEPS
+        if turbo_lora_strength is None:
+            turbo_lora_strength = TURBO_LORA_STRENGTH
         steps = turbo_steps if turbo else NORMAL_STEPS
 
         loaders = {
@@ -234,6 +239,7 @@ class R2VWorkflowAdapter:
             "audio_vae": [N_VAE_A, 0],
             "prompt": prompt_text,
             "width": w, "height": h, "length": int(frames),
+            "ref_image_size": ref_image_size if ref_image_size in ("match", "max") else "match",
         }
         for i in range(3):
             key = f"ref_images.ref_image_{i}"

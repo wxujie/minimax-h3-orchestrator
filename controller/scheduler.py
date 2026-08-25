@@ -193,9 +193,31 @@ class Scheduler:
                 if self.storage.exists(local):
                     ref_names.append(self._upload_to_worker(client, local))
             payload["ref_images"] = ref_names
+            payload["ref_image_size"] = inp.get("ref_image_size") or "match"
             payload["turbo"] = bool(inp.get("turbo", False))
-            payload["turbo_steps"] = inp.get("turbo_steps")
-            payload["turbo_lora_strength"] = inp.get("turbo_lora_strength")
+            payload["turbo_steps"] = inp.get("turbo_steps") or 4
+            payload["turbo_lora_strength"] = inp.get("turbo_lora_strength") or 1.0
+            # Build the full graph controller-side for the no-reference-image
+            # case so older Kaggle workers (with a stale adapter) can still
+            # execute R2V. The worker falls back to its own adapter when refs
+            # are provided (which requires uploading images it can reference).
+            if not ref_names:
+                try:
+                    from .workflow_r2v import R2VWorkflowAdapter
+                    payload["graph"] = R2VWorkflowAdapter().build_prompt(
+                        prompt_text=payload["prompt_text"],
+                        duration=payload["duration"],
+                        width=payload["width"], height=payload["height"],
+                        seed=payload["seed"],
+                        ref_images=[],
+                        ref_image_size=payload["ref_image_size"],
+                        turbo=payload["turbo"],
+                        turbo_steps=payload["turbo_steps"],
+                        turbo_lora_strength=payload["turbo_lora_strength"],
+                        model_overrides=payload["model_overrides"],
+                    )
+                except Exception:  # noqa: BLE001 - fall back to worker adapter
+                    payload.pop("graph", None)
         elif not staged.get("first_frame"):
             raise WorkerClientError(
                 "first_frame not provided or missing on disk", transient=False)

@@ -69,10 +69,12 @@ class JobRequest(BaseModel):
     first_frame: Optional[str] = None
     last_frame: Optional[str] = None
     ref_images: Optional[list[str]] = None
+    ref_image_size: str = "match"
     turbo: bool = False
     turbo_steps: Optional[int] = None
     turbo_lora_strength: Optional[float] = None
     workflow: str = "minimax-h3"
+    graph: Optional[dict] = None
     model_overrides: Optional[dict] = None
 
 
@@ -262,21 +264,26 @@ class WorkerAgent:
         try:
             p = rj.payload
             if p.workflow == "minimax-h3-r2v":
-                # Reference-to-Video: stage + upload ref images, call R2V factory.
-                ref_comfy = []
-                for raw in (p.ref_images or []):
-                    local = self._stage_path(raw)
-                    if local:
-                        ref_comfy.append(self.comfy.upload_image(local))
-                graph = self.workflow_factory(
-                    prompt_text=p.prompt_text, duration=p.duration,
-                    width=p.width, height=p.height, seed=p.seed,
-                    ref_images=ref_comfy,
-                    turbo=p.turbo,
-                    turbo_steps=p.turbo_steps,
-                    turbo_lora_strength=p.turbo_lora_strength,
-                    model_overrides=p.model_overrides,
-                )
+                if p.graph is not None:
+                    # Controller already built the full ComfyUI graph.
+                    graph = p.graph
+                else:
+                    # Reference-to-Video: stage + upload ref images, call R2V factory.
+                    ref_comfy = []
+                    for raw in (p.ref_images or []):
+                        local = self._stage_path(raw)
+                        if local:
+                            ref_comfy.append(self.comfy.upload_image(local))
+                    graph = self.workflow_factory(
+                        prompt_text=p.prompt_text, duration=p.duration,
+                        width=p.width, height=p.height, seed=p.seed,
+                        ref_images=ref_comfy,
+                        ref_image_size=p.ref_image_size or "match",
+                        turbo=p.turbo,
+                        turbo_steps=p.turbo_steps,
+                        turbo_lora_strength=p.turbo_lora_strength,
+                        model_overrides=p.model_overrides,
+                    )
             else:
                 first_local = self._stage_path(p.first_frame)
                 last_local = self._stage_path(p.last_frame) if p.last_frame else None
