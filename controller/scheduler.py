@@ -203,7 +203,7 @@ class Scheduler:
                 payload.pop("graph", None)
 
         # R2V mode: stage + upload reference images, toggle turbo.
-        if workflow == "minimax-h3-r2v":
+        elif workflow == "minimax-h3-r2v":
             ref_names = []
             for raw in (inp.get("ref_images") or []):
                 fname = _safe(str(raw))
