@@ -72,14 +72,15 @@ Design facts worth knowing up front:
 
 | Path | What it is |
 |------|------------|
-| `controller/` | Scheduler, job/worker/account registries, storage, workflow adapters, Kaggle + FastAPI layer |
+| `controller/` | Scheduler, job/worker/account registries, storage, workflow adapters (FL2VA + R2V + Multishot), Kaggle + FastAPI layer |
 | `worker/` | Per-GPU agent that runs inside a notebook (ComfyUI client, Cloudflare tunnel) |
 | `client/sdk.py` | Python SDK for creating / polling / downloading video jobs |
 | `web/index.html` | Live dashboard, served at `/dashboard/` |
 | `workflows/workflow.json` | The `MiniMaxH3ImageToVideo` ComfyUI subgraph (editable JSON) |
 | `workflows/workflow_r2v.json` | The `MiniMaxH3ReferenceToVideo` ComfyUI template (read by the R2V adapter) |
+| `workflows/H3_Seamless_Chain_CORE.json` | The Multishot CORE workflow (read by the Multishot adapter) |
 | `notebooks/minimax-h3-comfyui.ipynb` | The notebook pushed to Kaggle |
-| `tests/` | In-process tests: scheduler, worker agent, workflow (FL2VA + R2V), storage, API, SDK |
+| `tests/` | In-process tests: scheduler, worker agent, workflow (FL2VA + R2V + Multishot), storage, API, SDK |
 
 ---
 
@@ -299,6 +300,76 @@ size applies to FL2VA for consistency.
 > it does **not** hot-reload pushed code changes. Any change to the adapter or
 > worker logic requires restarting the Kaggle kernel (which re-downloads the
 > models). Controller-side fixes, however, take effect on controller restart.
+
+---
+
+## Multishot (seamless chained shots) with reference images
+
+Beyond single-shot R2V, the orchestrator ships a **Multishot** workflow backed
+by the community [`ComfyUI-H3-Multishot`](https://github.com/jlucasmcrell/ComfyUI-H3-Multishot)
+pack. It chains N shots into **one continuous take** — no visible cut at shot
+boundaries, no colour shift, and continuous audio across the whole piece. The
+`H3MultishotSampler` node loops internally, feeding each shot's last frame +
+audio into the next shot (`continuity=first_frame`, the model's own trained
+hand-off — no extra Motion-Context pack needed for CORE).
+
+### Creating a Multishot job (JSON)
+
+```bash
+curl -sS -X POST http://localhost:8000/api/v1/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "workflow": "minimax-h3-multishot",
+    "script": "Shot 1 prompt...\n---\nShot 2 prompt...",
+    "shot_count": 2,
+    "frames_per_shot": 124,
+    "width": 832, "height": 480,
+    "start_image": "first_frame.png",
+    "reference_images": ["character.png"]
+  }'
+```
+
+Key inputs:
+
+- `script` — one prompt per shot, separated by `---` on its own line (or a
+  JSON `{"prompts": [...]}` string). Write the prompts following the pack's
+  [`PROMPTING.md`](https://huggingface.co/joeygambino/MiniMax-H3-Multishot-Workflow/blob/main/PROMPTING.md)
+  boundary rules (airlock / land settled / verbatim descriptions / physical
+  change per shot) — these are what make the joins invisible.
+- `shot_count` — total shots; 0 = one shot per `---` block.
+- `frames_per_shot` — frame count on the 17k+5 grid (124 ≈ 5.1s, 243 ≈ 10.1s,
+  362 ≈ 15.1s). **5s shots (124) must be dialogue-free** — the model drops the
+  airlock to cram a line in and the join audibly clips.
+- `start_image` — optional first frame (I2V seed for shot 1 only).
+- `reference_images` — optional character/style references carried into
+  **every** shot as `<Picture 1..N>`; this is what holds identity across a long
+  chain. Prompt each shot with e.g. *"She looks like the woman in
+  `<Picture 1>`."*
+
+The Kaggle notebook installs the Multishot pack into `custom_nodes/` at boot.
+Models reuse the existing ref2va unet + CLIP + dual VAE (no extra download).
+
+### The T4-tested recipe
+
+On a Tesla T4 (15 GB), the verified-fastest settings are **int8 ref2va +
+turbo LoRA at 4 steps, 832×480**. Measured 2-shot chains:
+
+| Config | 2-shot chain |
+|--------|--------------|
+| 20 steps (no turbo) | >60 min (times out) |
+| 8 steps + turbo | ~60 min (times out) |
+| **4 steps + turbo** | **~30 min** |
+| 4 steps + turbo + reference image | ~49 min |
+
+Experiments with `--enable-triton-backend` (T4's Turing arch gains nothing)
+and GGUF Q4_0 (4-bit precision breaks turbo's 4-step convergence) were both
+**slower** — keep int8 + turbo 4-step.
+
+> **Reference-image upload.** When a Multishot job carries `start_image` /
+> `reference_images`, the controller passes the original filenames to the
+> worker, which uploads them into ComfyUI's input dir before building the
+> graph (same path as R2V). Reference tokens ride through every sampling
+> step, so expect ~1.6× slower renders.
 
 ---
 
