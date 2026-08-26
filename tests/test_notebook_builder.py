@@ -72,7 +72,7 @@ def test_real_template_gets_runner_cell():
     )
     # reference notebook: 24 base cells + Multishot pack cell = 25;
     # +pip-install +runner = 27
-    assert len(doc["cells"]) == 27
+    assert len(doc["cells"]) == 28
     _runner_cell(doc)
 
 

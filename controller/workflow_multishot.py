@@ -46,7 +46,7 @@ N_SAVE_V = "11"       # SaveVideo
 N_SAVE_A = "12"       # SaveAudio
 
 # Models
-UNET_REF2VA = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+UNET_REF2VA = "MiniMax-H3-ref2va-Q4_0.gguf"
 CLIP_NAME = "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
 VAE_VIDEO = "minimax_h3_video_vae_fp16.safetensors"
 VAE_AUDIO = "minimax_h3_audio_vae_fp32.safetensors"
