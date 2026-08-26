@@ -73,6 +73,9 @@ class JobRequest(BaseModel):
     turbo: bool = False
     turbo_steps: Optional[int] = None
     turbo_lora_strength: Optional[float] = None
+    script: Optional[str] = None
+    frames_per_shot: Optional[int] = None
+    shot_count: int = 0
     workflow: str = "minimax-h3"
     graph: Optional[dict] = None
     model_overrides: Optional[dict] = None
@@ -263,7 +266,18 @@ class WorkerAgent:
         rj.status = JOB_RUNNING
         try:
             p = rj.payload
-            if p.workflow == "minimax-h3-r2v":
+            if p.workflow == "minimax-h3-multishot":
+                if p.graph is not None:
+                    graph = p.graph
+                else:
+                    graph = self.workflow_factory(
+                        script=p.script or "",
+                        width=p.width, height=p.height,
+                        frames_per_shot=p.frames_per_shot or 243,
+                        steps=20, seed=p.seed,
+                        shot_count=p.shot_count,
+                    )
+            elif p.workflow == "minimax-h3-r2v":
                 if p.graph is not None:
                     # Controller already built the full ComfyUI graph.
                     graph = p.graph

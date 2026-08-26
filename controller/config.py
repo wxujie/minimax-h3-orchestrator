@@ -124,6 +124,7 @@ class Settings:
 
     workflow_path: Path = field(default_factory=lambda: Path(_env("WORKFLOW_PATH", "./workflows/workflow.json")))
     workflow_r2v_path: Path = field(default_factory=lambda: Path(_env("WORKFLOW_R2V_PATH", "./workflows/workflow_r2v.json")))
+    workflow_multishot_path: Path = field(default_factory=lambda: Path(_env("WORKFLOW_MULTISHOT_PATH", "./workflows/H3_Seamless_Chain_CORE.json")))
     notebook_path: Path = field(default_factory=lambda: Path(_env("NOTEBOOK_PATH", "./notebooks/minimax-h3-comfyui.ipynb")))
     # Publicly reachable root of THIS controller, used by the pushed notebook to
     # POST /api/v1/agents/register back. Required for real notebook registration;

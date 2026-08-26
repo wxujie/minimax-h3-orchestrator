@@ -184,6 +184,24 @@ class Scheduler:
             "workflow": workflow,
         }
 
+        # Multishot mode: controller builds the full chained-shot graph.
+        if workflow == "minimax-h3-multishot":
+            payload["script"] = inp.get("script", "")
+            payload["frames_per_shot"] = inp.get("frames_per_shot")
+            payload["shot_count"] = inp.get("shot_count", 0)
+            try:
+                from .workflow_multishot import MultishotWorkflowAdapter
+                payload["graph"] = MultishotWorkflowAdapter().build_prompt(
+                    script=payload["script"],
+                    width=payload["width"] or 768,
+                    height=payload["height"] or 768,
+                    frames_per_shot=payload["frames_per_shot"] or 243,
+                    seed=payload["seed"],
+                    shot_count=payload["shot_count"],
+                )
+            except Exception:  # noqa: BLE001 - fall back to worker adapter
+                payload.pop("graph", None)
+
         # R2V mode: stage + upload reference images, toggle turbo.
         if workflow == "minimax-h3-r2v":
             ref_names = []

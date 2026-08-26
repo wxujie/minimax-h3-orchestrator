@@ -52,6 +52,9 @@ class JobCreate(BaseModel):
     turbo: bool = False
     turbo_steps: Optional[int] = None
     turbo_lora_strength: Optional[float] = None
+    script: Optional[str] = None
+    frames_per_shot: Optional[int] = None
+    shot_count: int = 0
     workflow: str = "minimax-h3"
     model_overrides: Optional[dict] = None
     priority: int = 0
@@ -70,6 +73,9 @@ def create_job_json(req: JobCreate):
         "turbo": req.turbo,
         "turbo_steps": req.turbo_steps,
         "turbo_lora_strength": req.turbo_lora_strength,
+        "script": req.script,
+        "frames_per_shot": req.frames_per_shot,
+        "shot_count": req.shot_count,
         "model_overrides": req.model_overrides or {},
     }
     r = jobs.create(
