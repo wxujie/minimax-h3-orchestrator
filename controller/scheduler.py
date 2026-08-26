@@ -189,10 +189,11 @@ class Scheduler:
             payload["script"] = inp.get("script", "")
             payload["frames_per_shot"] = inp.get("frames_per_shot")
             payload["shot_count"] = inp.get("shot_count", 0)
-            # stage + upload optional ref images (start_image / reference_images)
-            start_name = None
-            ref_names = []
-            for key, holder in (("start_image", None), ("reference_images", ref_names)):
+            # stage ref images to worker's input_dir, keep ORIGINAL filenames
+            # (worker uploads them to ComfyUI before building the graph).
+            start_fname = None
+            ref_fnames = []
+            for key, holder in (("start_image", None), ("reference_images", ref_fnames)):
                 raw = inp.get(key)
                 raws = raw if isinstance(raw, list) else ([raw] if raw else [])
                 for r in raws:
@@ -201,23 +202,28 @@ class Scheduler:
                     if self.storage.exists(local):
                         up = self._upload_to_worker(client, local)
                         if key == "start_image":
-                            start_name = up
+                            start_fname = up
                         else:
                             holder.append(up)
-            try:
-                from .workflow_multishot import MultishotWorkflowAdapter
-                payload["graph"] = MultishotWorkflowAdapter().build_prompt(
-                    script=payload["script"],
-                    width=payload["width"] or 768,
-                    height=payload["height"] or 768,
-                    frames_per_shot=payload["frames_per_shot"] or 243,
-                    seed=payload["seed"],
-                    shot_count=payload["shot_count"],
-                    start_image=start_name,
-                    reference_images=ref_names or None,
-                )
-            except Exception:  # noqa: BLE001 - fall back to worker adapter
-                payload.pop("graph", None)
+            has_ref = bool(start_fname or ref_fnames)
+            if has_ref:
+                # 有参考图：交给 worker 自己上传到 ComfyUI + 构建 graph
+                payload["start_image"] = start_fname
+                payload["reference_images"] = ref_fnames or None
+            else:
+                # 无参考图：controller 直接构建 graph（更快，避免多余上传）
+                try:
+                    from .workflow_multishot import MultishotWorkflowAdapter
+                    payload["graph"] = MultishotWorkflowAdapter().build_prompt(
+                        script=payload["script"],
+                        width=payload["width"] or 768,
+                        height=payload["height"] or 768,
+                        frames_per_shot=payload["frames_per_shot"] or 243,
+                        seed=payload["seed"],
+                        shot_count=payload["shot_count"],
+                    )
+                except Exception:  # noqa: BLE001 - fall back to worker adapter
+                    payload.pop("graph", None)
 
         # R2V mode: stage + upload reference images, toggle turbo.
         elif workflow == "minimax-h3-r2v":
