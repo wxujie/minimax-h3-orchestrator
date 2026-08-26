@@ -94,6 +94,8 @@ class MultishotWorkflowAdapter:
         sampler_name: str = "res_multistep",
         scheduler: str = "simple",
         seed_per_shot: bool = True,
+        start_image: Optional[str] = None,
+        reference_images: Optional[list[str]] = None,
         lora_1: str = "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
         lora_strength_1: float = 1.0,
         lora_2: str = _LORA_NONE,
@@ -175,6 +177,39 @@ class MultishotWorkflowAdapter:
                     "scheduler": scheduler,
                 },
             },
+        }
+
+        # Optional start_image: seeds shot 1 (I2V), later shots chain from tail.
+        if start_image:
+            graph["_start"] = {"class_type": "LoadImage",
+                               "inputs": {"image": start_image}}
+            graph[N_SAMPLER]["inputs"]["start_image"] = ["_start", 0]
+
+        # Optional reference_images: character/style refs carried into EVERY shot.
+        if reference_images:
+            refs = list(reference_images)[:9]
+            if len(refs) == 1:
+                graph["_refimg"] = {"class_type": "LoadImage",
+                                    "inputs": {"image": refs[0]}}
+                graph[N_SAMPLER]["inputs"]["reference_images"] = ["_refimg", 0]
+            else:
+                # multiple refs -> ImageBatch chain
+                graph["_refimg0"] = {"class_type": "LoadImage",
+                                     "inputs": {"image": refs[0]}}
+                batch_src = ["_refimg0", 0]
+                for i, fname in enumerate(refs[1:], start=1):
+                    graph[f"_refimg{i}"] = {"class_type": "LoadImage",
+                                            "inputs": {"image": fname}}
+                    bkey = f"_batch{i}"
+                    graph[bkey] = {
+                        "class_type": "ImageBatch",
+                        "inputs": {"image1": batch_src,
+                                   "image2": [f"_refimg{i}", 0]},
+                    }
+                    batch_src = [bkey, 0]
+                graph[N_SAMPLER]["inputs"]["reference_images"] = batch_src
+
+        graph.update({
             N_CREATE: {
                 "class_type": "CreateVideo",
                 "inputs": {
@@ -200,5 +235,5 @@ class MultishotWorkflowAdapter:
                     "filename_prefix": "audio/H3CHAIN",
                 },
             },
-        }
+        })
         return graph

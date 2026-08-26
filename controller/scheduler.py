@@ -189,6 +189,21 @@ class Scheduler:
             payload["script"] = inp.get("script", "")
             payload["frames_per_shot"] = inp.get("frames_per_shot")
             payload["shot_count"] = inp.get("shot_count", 0)
+            # stage + upload optional ref images (start_image / reference_images)
+            start_name = None
+            ref_names = []
+            for key, holder in (("start_image", None), ("reference_images", ref_names)):
+                raw = inp.get(key)
+                raws = raw if isinstance(raw, list) else ([raw] if raw else [])
+                for r in raws:
+                    fname = _safe(str(r))
+                    local = self.storage.upload_path(fname)
+                    if self.storage.exists(local):
+                        up = self._upload_to_worker(client, local)
+                        if key == "start_image":
+                            start_name = up
+                        else:
+                            holder.append(up)
             try:
                 from .workflow_multishot import MultishotWorkflowAdapter
                 payload["graph"] = MultishotWorkflowAdapter().build_prompt(
@@ -198,6 +213,8 @@ class Scheduler:
                     frames_per_shot=payload["frames_per_shot"] or 243,
                     seed=payload["seed"],
                     shot_count=payload["shot_count"],
+                    start_image=start_name,
+                    reference_images=ref_names or None,
                 )
             except Exception:  # noqa: BLE001 - fall back to worker adapter
                 payload.pop("graph", None)

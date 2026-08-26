@@ -55,6 +55,8 @@ class JobCreate(BaseModel):
     script: Optional[str] = None
     frames_per_shot: Optional[int] = None
     shot_count: int = 0
+    start_image: Optional[str] = None
+    reference_images: Optional[list[str]] = None
     workflow: str = "minimax-h3"
     model_overrides: Optional[dict] = None
     priority: int = 0
@@ -76,6 +78,8 @@ def create_job_json(req: JobCreate):
         "script": req.script,
         "frames_per_shot": req.frames_per_shot,
         "shot_count": req.shot_count,
+        "start_image": req.start_image,
+        "reference_images": req.reference_images or [],
         "model_overrides": req.model_overrides or {},
     }
     r = jobs.create(

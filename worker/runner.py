@@ -60,6 +60,7 @@ def build_workflow_factory(repo_root: Optional[Path] = None):
     """
     from controller.workflow import WorkflowAdapter  # lazy import
     from controller.workflow_r2v import R2VWorkflowAdapter
+    from controller.workflow_multishot import MultishotWorkflowAdapter
 
     def _find(rel: str) -> Path:
         if repo_root is not None:
@@ -68,11 +69,13 @@ def build_workflow_factory(repo_root: Optional[Path] = None):
 
     fl2va_path = _find("workflow.json")
     r2v_path = _find("workflow_r2v.json")
+    multishot_path = _find("H3_Seamless_Chain_CORE.json")
     if not fl2va_path.exists():
         raise RuntimeError(f"workflow.json not found at {fl2va_path}")
 
     fl2va = WorkflowAdapter(path=fl2va_path)
     r2v = R2VWorkflowAdapter(path=r2v_path) if r2v_path.exists() else None
+    multishot = MultishotWorkflowAdapter(path=multishot_path) if multishot_path.exists() else None
 
     def workflow_factory(**kwargs: object) -> dict:
         # Dispatch on the presence of R2V-only parameters.
@@ -81,6 +84,12 @@ def build_workflow_factory(repo_root: Optional[Path] = None):
                 raise RuntimeError("R2V workflow adapter not available")
             kwargs.pop("mode", None)
             return r2v.build_prompt(**kwargs)
+        if "script" in kwargs:
+            if multishot is None:
+                raise RuntimeError("Multishot workflow adapter not available")
+            kwargs.pop("mode", None)
+            kwargs.pop("ref_images", None)
+            return multishot.build_prompt(**kwargs)
         kwargs.pop("mode", None)
         kwargs.pop("ref_images", None)
         return fl2va.build_prompt(**kwargs)

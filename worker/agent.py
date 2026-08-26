@@ -76,6 +76,8 @@ class JobRequest(BaseModel):
     script: Optional[str] = None
     frames_per_shot: Optional[int] = None
     shot_count: int = 0
+    start_image: Optional[str] = None
+    reference_images: Optional[list[str]] = None
     workflow: str = "minimax-h3"
     graph: Optional[dict] = None
     model_overrides: Optional[dict] = None
@@ -270,12 +272,25 @@ class WorkerAgent:
                 if p.graph is not None:
                     graph = p.graph
                 else:
+                    # fallback: upload ref images then build via factory
+                    start_comfy = None
+                    ref_comfy = []
+                    if p.start_image:
+                        sl = self._stage_path(p.start_image)
+                        if sl:
+                            start_comfy = self.comfy.upload_image(sl)
+                    for raw in (p.reference_images or []):
+                        local = self._stage_path(raw)
+                        if local:
+                            ref_comfy.append(self.comfy.upload_image(local))
                     graph = self.workflow_factory(
                         script=p.script or "",
                         width=p.width, height=p.height,
                         frames_per_shot=p.frames_per_shot or 243,
-                        steps=20, seed=p.seed,
+                        steps=4, seed=p.seed,
                         shot_count=p.shot_count,
+                        start_image=start_comfy,
+                        reference_images=ref_comfy or None,
                     )
             elif p.workflow == "minimax-h3-r2v":
                 if p.graph is not None:
