@@ -126,12 +126,14 @@ def build_pushed_notebook(notebook_name: str) -> Optional[dict]:
 
 def _init() -> None:
     global _store, _accounts, _workers, _jobs, _scheduler
+    from .providers import ProviderRegistry  # local import
     _store = db.Store()
     _accounts = AccountManager(_store)
     _accounts.sync_from_config()
     _workers = WorkerManager(_store)
     _jobs = JobManager(_store)
-    _scheduler = Scheduler(_store, _jobs, _workers, _accounts, KaggleProvider())
+    _scheduler = Scheduler(_store, _jobs, _workers, _accounts,
+                           ProviderRegistry(_accounts))
     _scheduler.start()
 
 

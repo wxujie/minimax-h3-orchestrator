@@ -32,6 +32,7 @@ class AccountConfig:
     id: str
     username: str
     key: str
+    provider: str = "kaggle"   # "kaggle" | "colab"
     enabled: bool = True
 
 
@@ -61,21 +62,28 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def _parse_accounts() -> List[AccountConfig]:
-    """Discover accounts from KAGGLE_ACCOUNT_*_USERNAME/KEY env pairs."""
+    """Discover accounts from KAGGLE_ACCOUNT_* and COLAB_ACCOUNT_* env pairs.
+
+    Kaggle accounts carry USERNAME + KEY. Colab accounts carry no secret in the
+    environment (the Colab CLI uses its own local login state), so only their
+    ENABLED flag is read.
+    """
     accounts: List[AccountConfig] = []
-    pattern = re.compile(r"^KAGGLE_ACCOUNT_(\d+)_(USERNAME|KEY|ENABLED)$")
-    by_index: dict[str, dict[str, str]] = {}
+
+    # Kaggle: KAGGLE_ACCOUNT_<N>_USERNAME / KEY / ENABLED
+    kg_pattern = re.compile(r"^KAGGLE_ACCOUNT_(\d+)_(USERNAME|KEY|ENABLED)$")
+    kg_by_index: dict[str, dict[str, str]] = {}
     for key, val in os.environ.items():
-        m = pattern.match(key)
+        m = kg_pattern.match(key)
         if not m:
             continue
         idx, field_ = m.group(1), m.group(2)
-        by_index.setdefault(idx, {})[field_.lower()] = val
-    for idx in sorted(by_index, key=lambda s: int(s)):
-        cfg = by_index[idx]
+        kg_by_index.setdefault(idx, {})[field_.lower()] = val
+    for idx in sorted(kg_by_index, key=lambda s: int(s)):
+        cfg = kg_by_index[idx]
         user = cfg.get("username", "")
         k = cfg.get("key", "")
-        if not user:  # incomplete declaration - skip, never fabricate
+        if not user:
             continue
         enabled = cfg.get("enabled", "true")
         accounts.append(
@@ -83,14 +91,39 @@ def _parse_accounts() -> List[AccountConfig]:
                 id=f"kaggle-account-{idx}",
                 username=user,
                 key=k,
+                provider="kaggle",
                 enabled=enabled.strip().lower() in {"1", "true", "yes", "on", ""},
             )
         )
+
+    # Colab: COLAB_ACCOUNT_<N>_ENABLED (optionally COLAB_ACCOUNT_<N>_ID)
+    colab_pattern = re.compile(r"^COLAB_ACCOUNT_(\d+)_(ID|ENABLED)$")
+    colab_by_index: dict[str, dict[str, str]] = {}
+    for key, val in os.environ.items():
+        m = colab_pattern.match(key)
+        if not m:
+            continue
+        idx, field_ = m.group(1), m.group(2)
+        colab_by_index.setdefault(idx, {})[field_.lower()] = val
+    for idx in sorted(colab_by_index, key=lambda s: int(s)):
+        cfg = colab_by_index[idx]
+        enabled = cfg.get("enabled", "true")
+        accounts.append(
+            AccountConfig(
+                id=cfg.get("id") or f"colab-account-{idx}",
+                username="",   # Colab identity lives in the CLI's local login
+                key="",        # no secret in env
+                provider="colab",
+                enabled=enabled.strip().lower() in {"1", "true", "yes", "on", ""},
+            )
+        )
+
     # Deterministic fallback ordering if only unindexed vars are provided.
     if not accounts:
         accounts = [AccountConfig(id="kaggle-account-1",
                                    username=_env("KAGGLE_USERNAME"),
-                                   key=_env("KAGGLE_KEY"))]
+                                   key=_env("KAGGLE_KEY"),
+                                   provider="kaggle")]
     return accounts
 
 

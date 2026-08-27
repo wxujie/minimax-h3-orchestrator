@@ -202,6 +202,10 @@ class KaggleManager:
         )
         return r.returncode == 0
 
+    def stop(self, slug: str) -> bool:
+        """Kaggle's official API has no terminate endpoint; always False."""
+        return False
+
     # ---------------- limitation shim ----------------
     @staticmethod
     def api_limitations() -> list[str]:
