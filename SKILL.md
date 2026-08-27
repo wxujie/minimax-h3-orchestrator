@@ -1,22 +1,24 @@
 ---
 name: minimax-h3-orchestrator
-description: 操作 MiniMax-H3 orchestrator（Kaggle GPU 池 + Cloudflare 隧道跑 ComfyUI 视频生成）。当需要提交 FL2VA / R2V / Multishot 视频任务、重启 controller、重启 Kaggle kernel、调试 worker 注册、或排查生成失败/超时时使用。包含 T4 实测速度配方和所有踩过的坑。
+description: 操作 MiniMax-H3 orchestrator（Kaggle/Colab GPU 池 + Cloudflare 隧道跑 ComfyUI 视频生成）。当需要提交 FL2VA / R2V / Multishot 视频任务、重启 controller、重启 Kaggle kernel、登录 Colab 账号、调试 worker 注册、或排查生成失败/超时时使用。包含 T4 实测速度配方和所有踩过的坑。
 ---
 
 # MiniMax-H3 Orchestrator 操作手册
 
-这是一个用免费 Kaggle GPU 池 + Cloudflare 隧道跑 MiniMax-H3 视频生成的调度系统。controller 是本机 FastAPI 服务，worker 是 Kaggle notebook 里的 ComfyUI 实例，通过 Cloudflare 隧道回连。
+这是一个用免费 Kaggle GPU 池 + Google Colab GPU + Cloudflare 隧道跑 MiniMax-H3 视频生成的调度系统。controller 是本机 FastAPI 服务，worker 是 Kaggle notebook / Colab session 里的 ComfyUI 实例，通过 Cloudflare 隧道回连。
 
 ## 架构速览
 
 ```
 Client → controller (本机 :8001, FastAPI) → Kaggle notebook × 2 worker (ComfyUI)
-                ↑ Cloudflare 隧道回连        （每 notebook 2 张 T4 = 2 worker）
+        ↑ Cloudflare 隧道回连        └──── Colab session × 1 worker (ComfyUI)
 ```
 
 - **controller**：本机 `uvicorn controller.main:app --port 8001`
-- **worker**：Kaggle notebook 启动时 clone 本 repo，起 2 个 ComfyUI（gpu0/gpu1），开隧道回注册
+- **worker（Kaggle）**：Kaggle notebook 启动时 clone 本 repo，起 2 个 ComfyUI（gpu0/gpu1），开隧道回注册
+- **worker（Colab）**：Colab session 启动时 clone 本 repo，起 1 个 ComfyUI（单卡 T4），开隧道回注册
 - **公网入口**：`https://controller.jayapp.cn` → cloudflared → `localhost:8001`
+- **多账号**：Kaggle 用 `KAGGLE_ACCOUNT_<N>_*`，Colab 用 `COLAB_ACCOUNT_<N>_*`（OAuth 本地登录态）
 
 ## 快速开始
 
@@ -72,16 +74,40 @@ curl -sS -X POST http://127.0.0.1:8001/api/v1/jobs \
 
 **最优解：int8 ref2va + turbo LoRA 4步 + 832×480**
 
-| 配置 | 2镜头链式耗时 |
-|------|--------------|
+| 配置 | 耗时 |
+|------|------|
 | 20步无turbo | >60min 超时 ❌ |
 | 8步+turbo | ~60min 超时 ❌ |
 | **4步+turbo** | **~30min** ✅ |
+| **4步+turbo+TeaCache** | **20min（5s）/ 23min（10s多镜头）** ✅✅ |
 | 4步+turbo+参考图 | ~49min（参考token贯穿每步，慢1.6x）|
+| 阿里 PDD 8步（Ref2VA） | >60min 超时 ❌（head bank 在 T4 int8 换页下 thrash）|
+
+**平台实测（2026-08-28）：**
+
+| 平台 | 配置 | 内容 | 耗时 |
+|------|------|------|------|
+| Kaggle | 4步turbo+TeaCache | 5s单镜 | 20min |
+| Colab | 4步turbo 无TeaCache | 5s单镜 | 23min |
+| Colab | 4步turbo+TeaCache | **10s多镜头(2镜)** | **23min** ✅ |
+
+**关键结论：**
+- **TeaCache（UC_MiniMaxH3Cache）是 T4 上的核心提速件**——内容翻倍耗时几乎不变
+- **10秒单镜头（243帧）在 T4 上必然超时**：显存顶到 97%，贴上限慢到 3600s 超时。要 10 秒就 5s×2 链式
+- **阿里 PDD Acc LoRA 在小显存卡上不可行**，放弃
 
 **两个加速实验都否决了，别再试：**
 - `--enable-triton-backend`：T4 是 Turing 老架构，triton 优化 Ampere/Hopper，加了反而更慢（39min）
 - GGUF Q4_0：4bit 精度让 turbo 4步不收敛，48min 比 int8 还慢
+
+### TeaCache 接入要点（★ 必读）
+
+TeaCache 用 `UC_MiniMaxH3Cache` 节点（来自 `ComfyUI-UtilsCollection`）。
+
+- **依赖**：`opencv-python` + `typing-extensions` + `unifiedefficientloader>=0.5.3`。**`comfy_api` 是 ComfyUI 内置模块，不是 PyPI 包，不要 pip install**
+- 接入位置：`H3LoraStack → UC_MiniMaxH3Cache → H3MultishotSampler`
+- 参数：`reuse_threshold=0.15`（默认0.05），`device=cpu`（T4 显存紧，residual 放 CPU）
+- API 请求：`use_teacache=true, teacache_thresh=0.15`
 
 ## 脚本规则（Multishot 接缝不崩的关键）
 
@@ -158,6 +184,37 @@ EOF
 
 重启后 worker 要重新下载全部模型（20-40 分钟），期间 `ready_workers=0` 是正常的。
 
+### Colab worker（★ 第二 GPU 池）
+
+Colab 是 Kaggle 的替代/补充 worker 池，单卡 T4，通过同一套隧道机制回连。
+
+**登录账号（一次性，每个账号一条命令）：**
+
+```bash
+bash scripts/colab-login.sh colab-account-1
+bash scripts/colab-login.sh colab-account-2
+# 会弹出 Google OAuth 链接，浏览器授权后粘回 code
+```
+
+token 落到 `~/.colab-accounts/<id>/.config/colab-cli/token.json`，多账号 HOME 隔离互不覆盖。
+
+**启用账号（`.env`）：**
+
+```bash
+COLAB_ACCOUNT_1_ID=colab-account-1
+COLAB_ACCOUNT_1_ENABLED=true
+```
+
+**关键差异 vs Kaggle：**
+- 单卡 T4（gpu_count=1），Kaggle 双卡
+- 能主动 `stop`（Kaggle 无 terminate API）
+- CLI 自带 keep-alive，但**免费档长任务仍可能被回收**（实测跑一半 session 没了）
+- `colab exec` 输出是**结束后一次性返回**，跑长任务时看不到实时进度
+
+**⚠️ 依赖版本坑：**
+- `jupyter-kernel-client` 必须 `<1.0`（1.0.2 把 `KernelClient` 改名成 `JupyterKernelClient`，colab CLI 0.6.0 会崩）
+- OAuth scope 校验 bug：登录脚本已内置 `OAUTHLIB_RELAX_TOKEN_SCOPE=1`
+
 ### 端口
 
 - controller 跑 **8001**（8000 被无关的 node 进程占用）
@@ -217,10 +274,26 @@ for j in json.load(sys.stdin):
 ```
 
 常见错误：
-- `timed out after 3600s` → 步数太多/没挂 turbo，降到 4 步
+- `timed out after 3600s` → 步数太多/没挂 turbo，降到 4 步，或挂 TeaCache
 - `no video output produced` → 分辨率太高 OOM，降到 832×480
 - `Invalid image file: xxx.png` → 参考图没上传到 ComfyUI input/ 目录（参考图必须走 worker 上传链路）
 - `first_frame not provided` → workflow 字段丢了（controller 跑旧代码没重启）
+- `missing_node_type: 'UC_MiniMaxH3Cache'` → 任务派给了没装 UtilsCollection 的旧 worker（Kaggle 旧 worker 没装 TeaCache）。把旧 worker 下线，或重启它拉新代码
+- `SSL: UNEXPECTED_EOF`（轮询时）→ 本机代理（127.0.0.1:7890）拦截了 controller→worker 的 Cloudflare 请求。已用 trust_env=False 修复，但旧代码需重启 controller / worker 才生效
+
+### 本机代理坑（★ 今晚最隐蔽的）
+
+controller 进程会继承 gateway 的 `https_proxy=http://127.0.0.1:7890`。httpx 默认 `trust_env=True` 会走这个代理，代理转发 Cloudflare 的 TLS 握手会坏掉，表现成 worker 永远连不上（SSL EOF）。
+
+**已修复**：`controller/worker_client.py` 和 `worker/runner.py` 的所有 httpx 调用都加了 `trust_env=False`。
+
+验证方法：
+```bash
+# 不走代理直连 worker（应该 200）
+curl -sS --noproxy '*' <worker_tunnel_url>/health
+# 走代理（会 SSL EOF）
+curl -sS <worker_tunnel_url>/health
+```
 
 ### 手动派发卡住的任务
 
@@ -258,5 +331,5 @@ python3 ~/.openclaw/workspace/multishot/script_writer.py \
 ```bash
 cd ~/minimax-h3-orchestrator
 source .venv/bin/activate
-python -m pytest tests/ -q   # 62 个测试，全 in-process，无网络/GPU
+python -m pytest tests/ -q   # 75 个测试，全 in-process，无网络/GPU
 ```
