@@ -59,6 +59,12 @@ class JobCreate(BaseModel):
     reference_images: Optional[list[str]] = None
     workflow: str = "minimax-h3"
     model_overrides: Optional[dict] = None
+    use_teacache: bool = True
+    teacache_thresh: float = 0.15
+    use_pdd: bool = False
+    pdd_nfe: str = "8"
+    pdd_lora_strength: float = 1.0
+    pdd_head_strength: float = 1.0
     priority: int = 0
 
 
@@ -81,6 +87,12 @@ def create_job_json(req: JobCreate):
         "start_image": req.start_image,
         "reference_images": req.reference_images or [],
         "model_overrides": req.model_overrides or {},
+        "use_teacache": req.use_teacache,
+        "teacache_thresh": req.teacache_thresh,
+        "use_pdd": req.use_pdd,
+        "pdd_nfe": req.pdd_nfe,
+        "pdd_lora_strength": req.pdd_lora_strength,
+        "pdd_head_strength": req.pdd_head_strength,
     }
     r = jobs.create(
         workflow=req.workflow,
