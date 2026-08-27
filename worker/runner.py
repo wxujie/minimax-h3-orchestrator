@@ -112,7 +112,7 @@ def _wait_server(port: int, timeout_s: float = 30) -> bool:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            r = httpx.get(f"http://127.0.0.1:{port}/health", timeout=3)
+            r = httpx.get(f"http://127.0.0.1:{port}/health", timeout=3, trust_env=False)
             if r.status_code == 200:
                 return True
         except Exception:
@@ -133,7 +133,7 @@ def _register(controller_url: str, secret: str, *, worker_id: str,
     }
     headers = {"Authorization": f"Bearer {secret}"} if secret else {}
     try:
-        r = httpx.post(url, json=payload, headers=headers, timeout=30)
+        r = httpx.post(url, json=payload, headers=headers, timeout=30, trust_env=False)
         return r.status_code < 400
     except Exception as exc:  # noqa: BLE001 - transient network
         log.warning("register_failed worker=%s err=%s", worker_id, exc)
@@ -147,11 +147,16 @@ def _probe_tunnel(url: str, timeout_s: float = 8.0) -> bool:
     This detects the zombie-tunnel case: cloudflared is still a live process,
     but the edge connection has died, so inbound traffic silently blackholes.
     Process liveness alone cannot see that — only an actual round trip can.
+
+    trust_env=False is critical: the Kaggle host may inherit a proxy from its
+    own environment, and routing the self-probe through a proxy produces the
+    same TLS EOF symptom we are trying to detect. Probe the edge directly.
     """
     if not url:
         return False
     try:
-        r = httpx.get(url.rstrip("/") + "/health", timeout=timeout_s)
+        r = httpx.get(url.rstrip("/") + "/health", timeout=timeout_s,
+                      trust_env=False)
         return r.status_code < 500
     except Exception:
         return False

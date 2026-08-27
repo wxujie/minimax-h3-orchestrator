@@ -66,7 +66,7 @@ def test_register_posts_correct_contract(monkeypatch):
         def __init__(self, status_code=200):
             self.status_code = status_code
 
-    def fake_post(url, json, headers, timeout):
+    def fake_post(url, json, headers, timeout, trust_env):
         calls.append((url, json, headers))
         return _FakePost(200)
 

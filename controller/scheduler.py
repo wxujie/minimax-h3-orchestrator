@@ -321,8 +321,10 @@ class Scheduler:
         try:
             st = client.job_status(self._remote(job_id))
         except WorkerClientError as e:
-            self.jobs.fail(job_id, "status poll: " + e.message,
-                           error_class=ErrorClass.TRANSIENT)
+            # Transient network error (tunnel blip, SSL EOF, timeout) while
+            # polling must NOT fail the job. The worker is almost certainly
+            # still running; just log and let the next poll cycle retry.
+            log.warning("job_poll_transient job=%s err=%s", job_id, e.message)
             return
         if not st:
             return
