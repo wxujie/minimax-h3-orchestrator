@@ -140,29 +140,65 @@ def _register(controller_url: str, secret: str, *, worker_id: str,
         return False
 
 
+def _probe_tunnel(url: str, timeout_s: float = 8.0) -> bool:
+    """True when a real HTTPS request through the worker's own public URL
+    reaches the local agent and gets an HTTP response (any status < 500).
+
+    This detects the zombie-tunnel case: cloudflared is still a live process,
+    but the edge connection has died, so inbound traffic silently blackholes.
+    Process liveness alone cannot see that — only an actual round trip can.
+    """
+    if not url:
+        return False
+    try:
+        r = httpx.get(url.rstrip("/") + "/health", timeout=timeout_s)
+        return r.status_code < 500
+    except Exception:
+        return False
+
+
 def _reconcile_worker(gate: dict) -> bool:
     """Ensure one worker is tunnelled and registered with the controller.
 
     Returns True when the worker is *good*: live tunnel **and** registered.
 
-    Heals two failure modes:
+    Heals three failure modes:
 
     * a dead cloudflared process — restart it (``start_tunnel`` truncates the
       log, so only the *new* URL is read; the stale/dead URL is not resurrected)
       and clear the registration so the fresh URL is posted;
+    * a zombie tunnel (process alive but edge connection dead) — the self-probe
+      round trip fails twice in a row, so the tunnel is force-restarted;
     * a healthy tunnel whose registration never landed (the controller was
       briefly down) — re-register the existing URL on the next pass.
     """
     agent = gate["agent"]
     proc = agent.tunnel.proc
     proc_dead = proc is not None and proc.poll() is not None
-    need_tunnel = proc_dead or not agent.tunnel.is_alive()
-    if need_tunnel:
-        url = agent.start_tunnel(timeout=40)
-        gate["url"] = url or gate.get("url")
-        gate["registered"] = False
+    known_url = agent.tunnel.public_url or gate.get("url")
+
+    edge_alive = False
+    if not proc_dead and known_url:
+        edge_alive = _probe_tunnel(known_url)
+
+    if edge_alive:
+        # Healthy: reset the transient-failure counter.
+        gate["probe_fails"] = 0
+        gate["url"] = known_url
     else:
-        gate["url"] = agent.tunnel.public_url or gate.get("url")
+        # Either the process died or the edge is unreachable. A single blip
+        # shouldn't flip the tunnel (quick tunnels are flaky), so require two
+        # consecutive failed probes before force-restarting. A dead process
+        # restarts immediately.
+        fails = gate.get("probe_fails", 0) + 1
+        gate["probe_fails"] = fails
+        if proc_dead or fails >= 2:
+            url = agent.start_tunnel(timeout=40)
+            gate["url"] = url or gate.get("url")
+            gate["registered"] = False
+            gate["probe_fails"] = 0
+        else:
+            gate["url"] = known_url
     if not gate.get("url"):
         return False
     if not gate.get("registered"):
