@@ -240,6 +240,10 @@ class Scheduler:
             payload["turbo"] = bool(inp.get("turbo", False))
             payload["turbo_steps"] = inp.get("turbo_steps") or 4
             payload["turbo_lora_strength"] = inp.get("turbo_lora_strength") or 1.0
+            payload["use_pdd"] = bool(inp.get("use_pdd", False))
+            payload["pdd_nfe"] = inp.get("pdd_nfe") or "8"
+            payload["pdd_lora_strength"] = inp.get("pdd_lora_strength") or 1.0
+            payload["pdd_head_strength"] = inp.get("pdd_head_strength") or 1.0
             # Build the full graph controller-side for the no-reference-image
             # case so older Kaggle workers (with a stale adapter) can still
             # execute R2V. The worker falls back to its own adapter when refs
@@ -257,6 +261,10 @@ class Scheduler:
                         turbo=payload["turbo"],
                         turbo_steps=payload["turbo_steps"],
                         turbo_lora_strength=payload["turbo_lora_strength"],
+                        use_pdd=payload["use_pdd"],
+                        pdd_nfe=payload["pdd_nfe"],
+                        pdd_lora_strength=payload["pdd_lora_strength"],
+                        pdd_head_strength=payload["pdd_head_strength"],
                         model_overrides=payload["model_overrides"],
                     )
                 except Exception:  # noqa: BLE001 - fall back to worker adapter

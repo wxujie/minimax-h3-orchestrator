@@ -73,6 +73,10 @@ class JobRequest(BaseModel):
     turbo: bool = False
     turbo_steps: Optional[int] = None
     turbo_lora_strength: Optional[float] = None
+    use_pdd: bool = False
+    pdd_nfe: str = "8"
+    pdd_lora_strength: float = 1.0
+    pdd_head_strength: float = 1.0
     script: Optional[str] = None
     frames_per_shot: Optional[int] = None
     shot_count: int = 0
@@ -311,6 +315,10 @@ class WorkerAgent:
                         turbo=p.turbo,
                         turbo_steps=p.turbo_steps,
                         turbo_lora_strength=p.turbo_lora_strength,
+                        use_pdd=p.use_pdd,
+                        pdd_nfe=p.pdd_nfe,
+                        pdd_lora_strength=p.pdd_lora_strength,
+                        pdd_head_strength=p.pdd_head_strength,
                         model_overrides=p.model_overrides,
                     )
             else:

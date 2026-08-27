@@ -67,12 +67,19 @@ N_SAVE = "92"
 N_LORA = "145"          # LoraLoaderModelOnly
 N_SW_MODEL = "141"      # ComfySwitchNode (unet vs lora-unet)
 N_SW_STEPS = "142"      # ComfySwitchNode (20 vs turbo steps)
+N_PDD = "150"           # UC_MiniMaxH3PDDAcc (阿里 PDD Acc LoRA)
 
 # Turbo LoRA constants (official ref2v turbo)
 TURBO_LORA_NAME = "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
 TURBO_LORA_STRENGTH = 1.0
 NORMAL_STEPS = 20
 TURBO_STEPS = 4
+
+# 阿里 PDD Acc LoRA (Parallel Decoding Distillation, 8-step)
+PDD_LORA_NAME = "minimax_h3_ref2va_pdd_acc_8step_comfyui.safetensors"
+PDD_NFE = "8"
+PDD_LORA_STRENGTH = 1.0
+PDD_HEAD_STRENGTH = 1.0
 
 # T4 (15GB VRAM) safe default resolution. The ref2va unet (~20GB int8) + CLIP
 # + dual VAE + audio decoder exceed T4 VRAM at the native 1344x768 canvas,
@@ -194,6 +201,10 @@ class R2VWorkflowAdapter:
         turbo: bool = False,
         turbo_steps: int = TURBO_STEPS,
         turbo_lora_strength: float = TURBO_LORA_STRENGTH,
+        use_pdd: bool = False,
+        pdd_nfe: str = PDD_NFE,
+        pdd_lora_strength: float = PDD_LORA_STRENGTH,
+        pdd_head_strength: float = PDD_HEAD_STRENGTH,
         model_overrides: Optional[dict] = None,
     ) -> dict:
         """Return a flat API graph for ComfyUI ``/prompt``.
@@ -216,7 +227,10 @@ class R2VWorkflowAdapter:
             turbo_steps = TURBO_STEPS
         if turbo_lora_strength is None:
             turbo_lora_strength = TURBO_LORA_STRENGTH
-        steps = turbo_steps if turbo else NORMAL_STEPS
+        # PDD 模式忽略 turbo；它自带 8 步 sigmas，且官方要求不叠 turbo LoRA
+        if use_pdd:
+            turbo = False
+        steps = pdd_nfe if use_pdd else (turbo_steps if turbo else NORMAL_STEPS)
 
         loaders = {
             N_UNET: {"class_type": "UNETLoader",
@@ -257,6 +271,7 @@ class R2VWorkflowAdapter:
         # turbo: lora loader on the unet branch, then a switch
         lora = {}
         switches = {}
+        pdd = {}
         if turbo:
             lora[N_LORA] = {
                 "class_type": "LoraLoaderModelOnly",
@@ -285,12 +300,43 @@ class R2VWorkflowAdapter:
                 },
             }
             steps_src = [N_SW_STEPS, 0]
+        elif use_pdd:
+            # 阿里 PDD：unet -> UC_MiniMaxH3PDDAcc，用它的 model + sigmas 输出
+            pdd[N_PDD] = {
+                "class_type": "UC_MiniMaxH3PDDAcc",
+                "inputs": {
+                    "model": [N_UNET, 0],
+                    "pdd_lora": PDD_LORA_NAME,
+                    "nfe": pdd_nfe,
+                    "partition": "",
+                    "lora_strength": pdd_lora_strength,
+                    "head_strength": pdd_head_strength,
+                    "on_off_grid": "error",
+                },
+            }
+            model_src = [N_PDD, 0]
+            steps_src = [N_PDD, 1]  # sigmas 输出
         else:
             model_src = [N_UNET, 0]
             steps_src = NORMAL_STEPS
 
+        if use_pdd:
+            # PDD 模式：sampler 直接用 PDD 的 sigmas 输出（其步进边界），
+            # 采样器必须 euler，且绕过 BasicScheduler
+            sampler_name = "euler"
+            sigmas_src = [N_PDD, 1]
+            sched_node = {}
+        else:
+            sampler_name = "res_multistep"
+            sigmas_src = [N_SCHED, 0]
+            sched_node = {
+                N_SCHED: {"class_type": "BasicScheduler",
+                          "inputs": {"model": model_src, "scheduler": "simple",
+                                     "steps": steps_src, "denoise": 1.0}},
+            }
+
         graph = {
-            **loaders, **imgs, **lora, **switches,
+            **loaders, **imgs, **lora, **switches, **pdd, **sched_node,
             N_NOISE: {"class_type": "RandomNoise",
                       "inputs": {"noise_seed": seed_val}},
             N_CORE: {"class_type": "MiniMaxH3ReferenceToVideo",
@@ -298,14 +344,11 @@ class R2VWorkflowAdapter:
             N_GUIDER: {"class_type": "BasicGuider",
                        "inputs": {"model": model_src,
                                   "conditioning": [N_CORE, 0]}},
-            N_SCHED: {"class_type": "BasicScheduler",
-                      "inputs": {"model": model_src, "scheduler": "simple",
-                                 "steps": steps_src, "denoise": 1.0}},
             N_SEL: {"class_type": "KSamplerSelect",
-                    "inputs": {"sampler_name": "res_multistep"}},
+                    "inputs": {"sampler_name": sampler_name}},
             N_SAMPLER: {"class_type": "SamplerCustomAdvanced", "inputs": {
                 "noise": [N_NOISE, 0], "guider": [N_GUIDER, 0],
-                "sampler": [N_SEL, 0], "sigmas": [N_SCHED, 0],
+                "sampler": [N_SEL, 0], "sigmas": sigmas_src,
                 "latent_image": [N_CORE, 1]}},
             N_VDEC: {"class_type": "VAEDecode",
                      "inputs": {"samples": [N_SAMPLER, 0],
