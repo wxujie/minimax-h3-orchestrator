@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -55,6 +56,26 @@ class ColabManager:
         self.account = account
         self.gpu = gpu
         self._bin = shutil.which("colab")
+        # Colab CLI stores its OAuth token at a FIXED path under $HOME
+        # (~/.config/colab-cli/token.json) and has no per-account flag. To
+        # support multiple Colab accounts we give each account its own HOME
+        # so tokens are isolated per account instead of overwriting each other.
+        self._home = self._account_home(account)
+
+    @staticmethod
+    def _account_home(account: AccountConfig) -> str:
+        base = os.environ.get(
+            "COLAB_ACCOUNTS_HOME",
+            os.path.expanduser("~/.colab-accounts"),
+        )
+        # account id is safe (config-controlled), but sanitize anyway
+        safe_id = re.sub(r"[^\w\-.]", "_", account.id)
+        return os.path.join(base, safe_id)
+
+    def _ensure_home(self) -> str:
+        """Create the per-account home dir and return it."""
+        os.makedirs(self._home, exist_ok=True)
+        return self._home
 
     # ---------------- env ----------------
     def _cmd(self, args: list[str]) -> list[str]:
@@ -63,18 +84,22 @@ class ColabManager:
         return [sys.executable, "-m", "colab"] + args
 
     def _run(self, args: list[str], timeout: int = 180) -> subprocess.CompletedProcess:
-        """Run a colab CLI command, inheriting the user's local OAuth login.
+        """Run a colab CLI command with the account's isolated HOME.
 
-        No credentials are injected: the CLI reads its own session state from
-        its default config path. Output is captured for parsing.
+        No credentials are injected: the CLI reads its own OAuth token from
+        ``<account_home>/.config/colab-cli/token.json``. The per-account HOME
+        keeps multiple Colab accounts from clobbering each other's login.
         """
         cmd = self._cmd(args)
-        log.debug("colab cmd=%s", " ".join(cmd))
+        log.debug("colab cmd=%s home=%s", " ".join(cmd), self._home)
+        env = dict(os.environ)
+        env["HOME"] = self._ensure_home()
         return subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
             check=False,
         )
 

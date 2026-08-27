@@ -117,3 +117,13 @@ def test_api_limitations_mentions_oauth():
     lims = ColabManager.api_limitations()
     joined = " ".join(lims).lower()
     assert "oauth" in joined
+
+
+def test_account_home_isolation():
+    a1 = AccountConfig(id="colab-account-1", username="", key="", provider="colab")
+    a2 = AccountConfig(id="colab-account-2", username="", key="", provider="colab")
+    h1 = ColabManager._account_home(a1)
+    h2 = ColabManager._account_home(a2)
+    assert h1 != h2
+    assert "colab-account-1" in h1
+    assert "colab-account-2" in h2
