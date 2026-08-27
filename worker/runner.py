@@ -283,7 +283,7 @@ def run(*, notebook_id: Optional[str] = None, controller_url: Optional[str] = No
             tunnel_log_path=f"/tmp/worker_gpu{gpu}.log",
             input_dir=input_dir,
             output_dir=output_dir,
-            job_timeout_s=3600.0,
+            job_timeout_s=7200.0,
         )
         agent = WorkerAgent(spec, workflow_factory)
         threading.Thread(

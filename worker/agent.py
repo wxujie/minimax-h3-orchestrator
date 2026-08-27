@@ -53,7 +53,7 @@ class WorkerSpec:
     tunnel_log_path: str
     input_dir: str
     output_dir: str
-    job_timeout_s: float = 3600.0
+    job_timeout_s: float = 7200.0
 
     @property
     def comfy_base_url(self) -> str:

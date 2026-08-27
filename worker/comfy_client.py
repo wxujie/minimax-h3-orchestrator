@@ -126,7 +126,7 @@ class ComfyClient:
         data = r.json()
         return data.get(prompt_id)
 
-    def wait_for_history(self, prompt_id: str, timeout_s: float = 3600,
+    def wait_for_history(self, prompt_id: str, timeout_s: float = 7200,
                          poll_s: float = 5.0,
                          on_progress=None) -> dict:
         """Poll until history exists (i.e. finished) or timeout.
