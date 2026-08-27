@@ -179,7 +179,12 @@ class ColabManager:
         return self.poll_until_running(slug, timeout_s=300, interval_s=15)
 
     def _run_notebook(self, slug: str, notebook_json: dict) -> bool:
-        """Upload + execute the built notebook as a jupytext script."""
+        """Execute the built notebook as a jupytext script.
+
+        ``colab exec -f`` takes a LOCAL file path and uploads+runs it itself,
+        so there is no separate upload step. The temp dir stays alive for the
+        duration of the exec call.
+        """
         try:
             import jupytext  # local import; optional dep
             script = jupytext.writes(notebook_json, fmt="py:percent")
@@ -191,10 +196,7 @@ class ColabManager:
             td = Path(td)
             py_path = td / "bootstrap.py"
             py_path.write_text(script, encoding="utf-8")
-            remote = "/content/bootstrap.py"
-            if not self._upload(slug, str(py_path), remote):
-                return False
-            return self._exec(slug, remote, timeout=300)
+            return self._exec(slug, str(py_path), timeout=600)
 
     def _upload(self, slug: str, local: str, remote: str) -> bool:
         try:
@@ -203,10 +205,15 @@ class ColabManager:
         except Exception:
             return False
 
-    def _exec(self, slug: str, remote: str, timeout: int = 300) -> bool:
+    def _exec(self, slug: str, local_file: str, timeout: int = 300) -> bool:
+        """``colab exec -s <slug> -f <local_file>`` — CLI uploads and runs.
+
+        ``-f`` refers to a LOCAL path; the CLI itself handles transferring the
+        script to the remote runtime.
+        """
         try:
             r = self._run(["exec", "-s", slug, "--timeout", str(float(timeout)),
-                           "--file", remote], timeout=timeout + 60)
+                           "--file", local_file], timeout=timeout + 60)
             return r.returncode == 0
         except Exception:
             return False
@@ -217,18 +224,23 @@ class ColabManager:
         if r.returncode != 0:
             return "unknown"
         low = (r.stdout or r.stderr or "").lower()
-        for s in ("running", "idle", "stopped", "error", "starting"):
+        for s in ("idle", "running", "stopped", "error", "starting", "ready"):
             if s in low:
                 return s
         return "unknown"
 
     def poll_until_running(self, slug: str, timeout_s: int = 600,
                            interval_s: int = 20) -> bool:
+        """Poll until the session is usable for code execution.
+
+        Colab reports a healthy idle session as ``IDLE`` (not ``running``),
+        and that state accepts ``exec``, so both are treated as ready.
+        """
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             st = self.status(slug)
             log.info("colab status slug=%s status=%s", slug, st)
-            if st == "running":
+            if st in ("idle", "running", "ready"):
                 return True
             if st in ("stopped", "error"):
                 return False
