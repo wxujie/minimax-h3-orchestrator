@@ -54,16 +54,21 @@ def _runner_cell(*, notebook_id: str, controller_public_url: str,
 
     source = (
         "# --- MiniMax H3 orchestrator: register GPU workers with the controller ---\n"
-        "import os, sys, subprocess, pathlib\n"
+        "import os, sys, subprocess, pathlib, shutil\n"
         "\n"
         f"REPO_URL = {repo}\n"
         'REPO = "/tmp/minimax-h3-orchestrator"\n'
         "\n"
-        "if not pathlib.Path(REPO).exists():\n"
-        "    subprocess.run(\n"
-        '        ["git", "clone", "--depth", "1", REPO_URL, REPO],\n'
-        "        check=True, capture_output=True,\n"
-        "    )\n"
+        "# Always re-clone: Kaggle does not reliably clear /tmp between kernel\n"
+        "# restarts, and a stale checkout would run old worker code (e.g. the\n"
+        "# zombie-tunnel keepalive fix). A fresh clone guarantees the notebook\n"
+        "# runs exactly the code pushed to the repo.\n"
+        "if pathlib.Path(REPO).exists():\n"
+        "    shutil.rmtree(REPO, ignore_errors=True)\n"
+        "subprocess.run(\n"
+        '    ["git", "clone", "--depth", "1", REPO_URL, REPO],\n'
+        "    check=True, capture_output=True,\n"
+        ")\n"
         "sys.path.insert(0, REPO)\n"
         "\n"
         f"os.environ.setdefault(\"NOTEBOOK_ID\", {nb})\n"
