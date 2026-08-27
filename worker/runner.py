@@ -250,8 +250,14 @@ def run(*, notebook_id: Optional[str] = None, controller_url: Optional[str] = No
     if not notebook_id or not controller_url:
         raise RuntimeError("NOTEBOOK_ID and CONTROLLER_PUBLIC_URL are required")
 
-    input_dir = input_dir or os.environ.get("WORKER_INPUT_DIR", "/kaggle/working/inputs")
-    output_dir = output_dir or os.environ.get("WORKER_OUTPUT_DIR", "/kaggle/working/outputs")
+    input_dir = input_dir or os.environ.get(
+        "WORKER_INPUT_DIR",
+        "/kaggle/working/inputs" if os.path.isdir("/kaggle") else "/content/inputs",
+    )
+    output_dir = output_dir or os.environ.get(
+        "WORKER_OUTPUT_DIR",
+        "/kaggle/working/outputs" if os.path.isdir("/kaggle") else "/content/outputs",
+    )
     Path(input_dir).mkdir(parents=True, exist_ok=True)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 

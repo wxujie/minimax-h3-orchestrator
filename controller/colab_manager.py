@@ -179,18 +179,55 @@ class ColabManager:
         return self.poll_until_running(slug, timeout_s=300, interval_s=15)
 
     def _run_notebook(self, slug: str, notebook_json: dict) -> bool:
-        """Execute the built notebook as a jupytext script.
+        """Execute the built notebook as a plain Python script.
 
-        ``colab exec -f`` takes a LOCAL file path and uploads+runs it itself,
-        so there is no separate upload step. The temp dir stays alive for the
-        duration of the exec call.
+        ``colab exec -f`` runs a local ``.py`` file. Jupyter magics / ``!shell``
+        lines do NOT survive that conversion (jupytext would comment them out),
+        so we translate each code cell into runnable Python instead: ``!cmd``
+        becomes ``subprocess.run(["bash", "-lc", cmd], check=True)`` and ``%cd
+        dir`` becomes ``os.chdir(dir)``. The remaining code runs as-is.
         """
+        import nbformat  # local import; optional dep
         try:
-            import jupytext  # local import; optional dep
-            script = jupytext.writes(notebook_json, fmt="py:percent")
+            doc = nbformat.reads(json.dumps(notebook_json), as_version=4)
         except Exception as e:  # noqa: BLE001
-            log.error("jupytext_convert_failed err=%s", e)
+            log.error("notebook_parse_failed err=%s", e)
             return False
+
+        lines: list[str] = [
+            "import os, subprocess, sys",
+            "",
+        ]
+        for cell in doc.cells:
+            if cell.cell_type != "code":
+                continue
+            src = cell.source
+            if not src.strip():
+                continue
+            lines.append("")
+            raw_lines = src.splitlines()
+            i = 0
+            while i < len(raw_lines):
+                s = raw_lines[i].rstrip()
+                if s.startswith("!"):
+                    # Join shell line continuations (trailing backslash) into
+                    # one command so multi-line wget/apt blocks stay intact.
+                    cmd = s[1:].strip()
+                    while cmd.endswith("\\") and i + 1 < len(raw_lines):
+                        i += 1
+                        cmd = cmd[:-1].rstrip() + " " + raw_lines[i].strip()
+                    lines.append(
+                        f'subprocess.run(["bash", "-lc", {cmd!r}], check=True)')
+                elif s.startswith("%cd"):
+                    d = s[3:].strip()
+                    lines.append(f"os.chdir({d!r})")
+                elif s.startswith("%"):
+                    # other magics cannot run outside a kernel; drop them
+                    pass
+                else:
+                    lines.append(raw_lines[i])
+                i += 1
+        script = "\n".join(lines) + "\n"
 
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
