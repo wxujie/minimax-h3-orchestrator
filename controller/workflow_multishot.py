@@ -44,6 +44,7 @@ N_SAMPLER = "8"       # H3MultishotSampler
 N_CREATE = "10"       # CreateVideo
 N_SAVE_V = "11"       # SaveVideo
 N_SAVE_A = "12"       # SaveAudio
+N_CACHE = "50"        # UC_MiniMaxH3Cache (TeaCache, optional)
 
 # Models
 UNET_REF2VA = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
@@ -96,6 +97,8 @@ class MultishotWorkflowAdapter:
         seed_per_shot: bool = True,
         start_image: Optional[str] = None,
         reference_images: Optional[list[str]] = None,
+        use_teacache: bool = True,
+        teacache_thresh: float = 0.15,
         lora_1: str = "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
         lora_strength_1: float = 1.0,
         lora_2: str = _LORA_NONE,
@@ -158,10 +161,30 @@ class MultishotWorkflowAdapter:
                 "class_type": "VAELoader",
                 "inputs": {"vae_name": audio_vae},
             },
+        }
+
+        # Optional TeaCache: UC_MiniMaxH3Cache patches a cloned model with a
+        # block-stack residual cache. It feeds the sampler's ``model`` input
+        # instead of the raw LoRA output; when disabled, wire straight through.
+        if use_teacache:
+            graph[N_CACHE] = {
+                "class_type": "UC_MiniMaxH3Cache",
+                "inputs": {
+                    "model": [N_LORA, 0],
+                    "reuse_threshold": max(0.0, min(1.0, teacache_thresh)),
+                    "start_percent": 0.15,
+                    "end_percent": 0.90,
+                    "max_steps": 2,
+                    "device": "cpu",
+                    "verbose": False,
+                },
+            }
+
+        graph.update({
             N_SAMPLER: {
                 "class_type": "H3MultishotSampler",
                 "inputs": {
-                    "model": [N_LORA, 0],
+                    "model": [N_CACHE if use_teacache else N_LORA, 0],
                     "clip": [N_CLIP, 0],
                     "video_vae": [N_VAE_V, 0],
                     "audio_vae": [N_VAE_A, 0],
@@ -177,7 +200,7 @@ class MultishotWorkflowAdapter:
                     "scheduler": scheduler,
                 },
             },
-        }
+        })
 
         # Optional start_image: seeds shot 1 (I2V), later shots chain from tail.
         if start_image:

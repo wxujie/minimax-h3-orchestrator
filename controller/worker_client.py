@@ -37,7 +37,12 @@ class WorkerClient:
         self.public_url = public_url.rstrip("/")
         self.token = token
         self._headers = {"Authorization": f"Bearer {token}"}
-        self._http = httpx.Client(timeout=timeout)
+        # trust_env=False: never inherit http(s)_proxy from the process env.
+        # The controller host may run a gateway proxy (e.g. 127.0.0.1:7890)
+        # that mangles Cloudflare quick-tunnel TLS, turning healthy workers
+        # into "SSL: UNEXPECTED_EOF" ghosts. Worker URLs are public HTTPS and
+        # must be dialed directly.
+        self._http = httpx.Client(timeout=timeout, trust_env=False)
 
     # --------------------------------------------------------------- plumbing --
     def _get(self, path: str, **kw):

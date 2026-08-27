@@ -71,8 +71,8 @@ def test_real_template_gets_runner_cell():
         worker_auth_secret="s", template_path=_P("notebooks/minimax-h3-comfyui.ipynb"),
     )
     # reference notebook: 24 base cells + Multishot pack cell = 25;
-    # +pip-install +runner = 27
-    assert len(doc["cells"]) == 27
+    # +TeaCache pack cell = 26; +pip-install +runner = 28
+    assert len(doc["cells"]) == 28
     _runner_cell(doc)
 
 

@@ -221,6 +221,8 @@ class Scheduler:
                         frames_per_shot=payload["frames_per_shot"] or 243,
                         seed=payload["seed"],
                         shot_count=payload["shot_count"],
+                        use_teacache=inp.get("use_teacache", True),
+                        teacache_thresh=inp.get("teacache_thresh", 0.15),
                     )
                 except Exception:  # noqa: BLE001 - fall back to worker adapter
                     payload.pop("graph", None)
