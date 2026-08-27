@@ -80,8 +80,12 @@ class ProviderRegistry:
         return self._start_kaggle(ac, notebook_name)
 
     @staticmethod
-    def _build_body(notebook_name: str):
-        """Build the registerable ipynb document (shared by both providers)."""
+    def _build_body(notebook_name: str, gpu_count: int = 2):
+        """Build the registerable ipynb document (shared by both providers).
+
+        ``gpu_count`` tells the runner how many GPU workers to bring up on the
+        host. Kaggle notebooks get 2 T4s; a Colab session has 1.
+        """
         from .config import settings
         from .notebook_builder import build_notebook  # local import
 
@@ -95,6 +99,7 @@ class ProviderRegistry:
             worker_auth_secret=settings.worker_auth_secret,
             repo_url=settings.orchestrator_repo_url,
             template_path=settings.notebook_path,
+            gpu_count=gpu_count,
         )
 
     # ------------------------------------------------------------- kaggle ---
@@ -130,7 +135,7 @@ class ProviderRegistry:
                 log.warning("colab_capacity_unusable account=%s reason=%s",
                             ac.id, cap.reason)
                 return False
-            body = self._build_body(notebook_name)
+            body = self._build_body(notebook_name, gpu_count=1)
             if body is None:
                 return False
             # Colab notebooks are addressed by their document name, no user slug.
