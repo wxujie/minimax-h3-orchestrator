@@ -183,6 +183,12 @@ class Scheduler:
             "model_overrides": inp.get("model_overrides") or {},
             "workflow": workflow,
         }
+        # job-level 超时优先；否则用全局配置（settings.job_timeout_s，默认 7200）。
+        t = inp.get("timeout_s")
+        if t is not None:
+            payload["timeout_s"] = float(t)
+        elif settings is not None:
+            payload["timeout_s"] = settings.job_timeout_s
 
         # Multishot mode: controller builds the full chained-shot graph.
         if workflow == "minimax-h3-multishot":
@@ -416,9 +422,12 @@ class Scheduler:
         return None
 
     def _lazy_start(self, account_id: str, notebook_name: str) -> None:
+        # Colab 是单卡（1 worker），Kaggle 双卡（2 workers）。按账号 backend 决定。
+        ac = self.accounts.credential(account_id)
+        gpu_count = GPU_PER_NOTEBOOK if (ac and ac.provider == "kaggle") else 1
         with self.store.session() as s:
             s.merge(db.Notebook(id=notebook_name, account_id=account_id,
-                                gpu_count=GPU_PER_NOTEBOOK,
+                                gpu_count=gpu_count,
                                 status=NotebookStatus.NOTEBOOK_STARTING.value))
         self._in_flight.add(account_id)
         try:
@@ -436,9 +445,9 @@ class Scheduler:
                     nb.status = NotebookStatus.QUOTA_EXHAUSTED.value
                     nb.last_error = "provider.start_notebook failed"
             return
-        self.workers.provisioned(notebook_name, GPU_PER_NOTEBOOK)
-        log.info("scheduler_notebook_started notebook=%s account=%s",
-                 notebook_name, account_id)
+        self.workers.provisioned(notebook_name, gpu_count)
+        log.info("scheduler_notebook_started notebook=%s account=%s gpus=%s",
+                 notebook_name, account_id, gpu_count)
 
 
 def _safe(raw: str) -> str:

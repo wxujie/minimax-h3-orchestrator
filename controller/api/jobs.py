@@ -65,6 +65,8 @@ class JobCreate(BaseModel):
     pdd_nfe: str = "8"
     pdd_lora_strength: float = 1.0
     pdd_head_strength: float = 1.0
+    # 单个任务的最大渲染秒数；不传则回落到全局 JOB_TIMEOUT_S（默认 7200）。
+    timeout_s: Optional[float] = None
     priority: int = 0
 
 
@@ -93,6 +95,7 @@ def create_job_json(req: JobCreate):
         "pdd_nfe": req.pdd_nfe,
         "pdd_lora_strength": req.pdd_lora_strength,
         "pdd_head_strength": req.pdd_head_strength,
+        "timeout_s": req.timeout_s,
     }
     r = jobs.create(
         workflow=req.workflow,

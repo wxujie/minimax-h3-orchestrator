@@ -130,7 +130,7 @@ def _parse_accounts() -> List[AccountConfig]:
 @dataclass
 class Settings:
     host: str = field(default_factory=lambda: _env("CONTROLLER_HOST", "0.0.0.0"))
-    port: int = field(default_factory=lambda: _env_int("CONTROLLER_PORT", 8000))
+    port: int = field(default_factory=lambda: _env_int("CONTROLLER_PORT", 8001))
 
     database_url: str = field(default_factory=lambda: _env("DATABASE_URL", "sqlite:///./storage/controller.db"))
 
@@ -142,6 +142,9 @@ class Settings:
     worker_heartbeat_timeout_s: int = field(default_factory=lambda: _env_int("WORKER_HEARTBEAT_TIMEOUT_S", 60))
     schedule_poll_s: float = field(default_factory=lambda: _env_float("SCHEDULER_POLL_S", 5.0))
     job_poll_s: float = field(default_factory=lambda: _env_float("JOB_POLL_S", 3.0))
+    # 单个任务在 worker 上的最大渲染时长（秒）。短任务（5s 单镜）~20min，
+    # 多镜头/参考图任务会更长；7200s 是保守默认，可按 pool 实际卡速调。
+    job_timeout_s: float = field(default_factory=lambda: _env_float("JOB_TIMEOUT_S", 7200.0))
     notebook_start_wait_s: int = field(default_factory=lambda: _env_int("NOTEBOOK_START_WAIT_S", 30))
     max_concurrent_notebooks: int = field(
         default_factory=lambda: _env_int("MAX_CONCURRENT_NOTEBOOKS", 2)
@@ -169,7 +172,7 @@ class Settings:
     orchestrator_repo_url: str = field(
         default_factory=lambda: _env(
             "ORCHESTRATOR_REPO_URL",
-            "https://github.com/msaadakram/minimax-h3-orchestrator",
+            "https://github.com/wxujie/minimax-h3-orchestrator",
         )
     )
 

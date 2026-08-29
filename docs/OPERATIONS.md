@@ -1,7 +1,7 @@
 # Operations
 
 Run and operate the MiniMax-H3 orchestrator safely on a pool of Kaggle
-notebooks + Cloudflare tunnels.
+notebooks (2×T4) + Colab sessions (1×T4) behind Cloudflare tunnels.
 
 ## Environment reference
 
@@ -9,7 +9,7 @@ Set these in `.env` (see `.env.example`):
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CONTROLLER_HOST` / `PORT` | `0.0.0.0` / `8000` | Controller HTTP bind |
+| `CONTROLLER_HOST` / `PORT` | `0.0.0.0` / `8001` | Controller HTTP bind（8000 被无关 node 进程占用） |
 | `DATABASE_URL` | `sqlite:///./storage/controller.db` | SQLAlchemy URL (Postgres-ready) |
 | `STORAGE_DIR` | `./storage` | Uploads + artifacts root |
 | `WORKFLOW_PATH` | `./workflows/workflow.json` | Workflow adapter source |
@@ -18,18 +18,20 @@ Set these in `.env` (see `.env.example`):
 | `JOB_OUTPUT_RETENTION_HOURS` | `24` | Artifact sweep age |
 | `MAX_CONCURRENT_NOTEBOOKS` | `2` | Pool-wide provisioning cap |
 | `SCHEDULER_POLL_S` / `JOB_POLL_S` | `5.0` / `3.0` | Scheduler + job poll cadence |
+| `JOB_TIMEOUT_S` | `7200` | 单个任务最大渲染时长（秒）；任务 API 里的 `timeout_s` 可覆盖它 |
 | `WORKER_HEALTH_TIMEOUT_S` / `HEARTBEAT` | `30` / `60` | Health probing |
 | `NOTEBOOK_START_WAIT_S` | `30` | Time to wait for a notebook to come up |
 | `WORKER_AUTH_SECRET` | — | Shared controller↔worker Bearer secret |
 | `WORKER_AUTH_REQUIRED` | `true` | Gate every worker-agent endpoint |
 | `CLOUDFLARE_TOKEN` | — | Only for `named` tunnel mode |
+| `COLAB_ACCOUNT_<N>_ID/ENABLED` | — | One block per Colab account（OAuth 登录态在隔离 HOME 下，无 env 密钥） |
 | `KAGGLE_ACCOUNT_<N>_USERNAME/KEY/ENABLED` | — | One block per Kaggle account |
 
 ## Running the controller
 
 ```bash
 source .venv/bin/activate
-uvicorn controller.main:app --host 0.0.0.0 --port 8000
+uvicorn controller.main:app --host 0.0.0.0 --port 8001
 ```
 
 The scheduler runs in a background thread inside the app (`Scheduler.start()`).

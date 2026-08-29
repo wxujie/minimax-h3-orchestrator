@@ -87,8 +87,9 @@ Each `Scheduler.tick()`:
   `provider.start_notebook(...)`, and on success create the 2 placeholder workers
   via `provision()`. On failure the notebook becomes `QUOTA_EXHAUSTED`.
 
-The real provider is `controller/main.py::KaggleProvider` around
-`kaggle_manager` (capacity check → `ensure_notebook` push).
+The real provider is `controller/providers.py::ProviderRegistry`, which routes
+`start_notebook` to `KaggleManager` (2×T4) or `ColabManager` (1×T4) based on
+each account's `provider` field.
 
 ## Retry / failure policy
 

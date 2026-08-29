@@ -100,6 +100,7 @@ class ProviderRegistry:
             repo_url=settings.orchestrator_repo_url,
             template_path=settings.notebook_path,
             gpu_count=gpu_count,
+            job_timeout_s=settings.job_timeout_s,
         )
 
     # ------------------------------------------------------------- kaggle ---

@@ -69,6 +69,7 @@ curl -sS -X POST http://127.0.0.1:8001/api/v1/jobs \
 - `shot_count`：总镜头数，0 = 按 `---` 块数
 - `frames_per_shot`：124≈5.1s / 243≈10.1s / 362≈15.1s（17k+5 网格）
 - 参考图需先放到 `storage/uploads/`
+- `timeout_s`：**任务级渲染超时（秒）**，可选。不传则回落全局 `JOB_TIMEOUT_S`（`.env`，默认 7200）→ worker 的 `spec.job_timeout_s`。多镜头/参考图任务建议显式传大一点，短任务可传小一点提前失败重试。
 
 ## T4 实测速度配方（★ 必读，否则会超时）
 
@@ -91,10 +92,21 @@ curl -sS -X POST http://127.0.0.1:8001/api/v1/jobs \
 | Colab | 4步turbo 无TeaCache | 5s单镜 | 23min |
 | Colab | 4步turbo+TeaCache | **10s多镜头(2镜)** | **23min** ✅ |
 
+**平台实测（2026-08-29，Colab 双账号并行）：**
+
+| 配置 | 内容 | 结果 |
+|------|------|------|
+| 4步turbo+TeaCache | **2×5s（2镜×124帧）** | ✅ **纯渲染 ~11-12min**（shot1 初始化~5分半 + shot2 初始化~6分；每镜重新初始化模型是大头，采样只要几秒）|
+| 4步turbo+TeaCache | **8s单镜（192帧）** | ⚠️ 采样4步全跑完、进入VAE解码，但 VM 被回收掉线（跑两次都被回收，未出片）|
+| 4步turbo+TeaCache | **10s单镜（238帧）** | ❌ **OOM**：峰值显存 13.1GB，109秒即触发 CUDA OOM，不是 3600s 超时 |
+
 **关键结论：**
 - **TeaCache（UC_MiniMaxH3Cache）是 T4 上的核心提速件**——内容翻倍耗时几乎不变
-- **10秒单镜头（243帧）在 T4 上必然超时**：显存顶到 97%，贴上限慢到 3600s 超时。要 10 秒就 5s×2 链式
+- **10秒单镜头在 T4 上必然 OOM**：峰值显存 13.1GB（T4 只有 15GB），约 109 秒就爆，不是慢慢超时。要 10 秒就 5s×2 链式
+- **8秒单镜（192帧）采样阶段能跑完**，但 Colab 免费档 VM 在重负载 ~25 分钟后会掉线，长任务风险很高
+- **2×5s 是 T4 上最稳定的配置**，纯渲染约 11-12 分钟
 - **阿里 PDD Acc LoRA 在小显存卡上不可行**，放弃
+- **Colab 免费档 VM 不稳定**：实测跑 2×5s 完成后 ~25min 掉线；8s 单镜两次都在 VAE 解码阶段被回收。长任务（>20min）建议 Kaggle 或降低时长
 
 **两个加速实验都否决了，别再试：**
 - `--enable-triton-backend`：T4 是 Turing 老架构，triton 优化 Ampere/Hopper，加了反而更慢（39min）
@@ -108,6 +120,43 @@ TeaCache 用 `UC_MiniMaxH3Cache` 节点（来自 `ComfyUI-UtilsCollection`）。
 - 接入位置：`H3LoraStack → UC_MiniMaxH3Cache → H3MultishotSampler`
 - 参数：`reuse_threshold=0.15`（默认0.05），`device=cpu`（T4 显存紧，residual 放 CPU）
 - API 请求：`use_teacache=true, teacache_thresh=0.15`
+
+### ⚠️ ComfyUI 0.34+ 与 TeaCache 的兼容性 bug（2026-08-29 踩坑）
+
+ComfyUI 升级到 **0.34.0** 后，`comfy/ldm/minimax/model.py` 的
+`FinalLayer.forward()` 从 4 个参数变成 7 个必需参数：
+
+```python
+# 旧签名（UtilsCollection patch 还在用这个）
+def forward(self, x, t_emb, video_seg, audio_seg): ...
+# 新签名（0.34+，多了 PDD head bank 用的 sigma/sample_sigmas/shifts）
+def forward(self, x, t_emb, video_seg, audio_seg, sigma, sample_sigmas, shifts): ...
+```
+
+`ComfyUI-UtilsCollection`（TeaCache 的 `UC_MiniMaxH3Cache`）的
+`patcher_helpers.py::minimax_h3_block_patch_forward` 还在按旧签名调用
+`self.final_layer(...)`，导致一开 TeaCache 就：
+
+```text
+TypeError: FinalLayer.forward() missing 3 required positional arguments:
+'sigma', 'sample_sigmas', and 'shifts'
+```
+
+**症状**：任务派上去约 5 分钟就 FAILED，`last_error="no video output produced"`，
+ComfyUI 日志里是这个 TypeError。**不是 OOM 也不是超时**。
+
+**修复**：已写进 notebook 的 cell 15（clone 完 UtilsCollection 后探测签名并原地 patch）：
+
+```python
+# 把旧调用
+self.final_layer(hidden_states, timestep_embedding, video_seg, audio_seg)
+# 改成（sigma_v / transformer_options / shift_v / shift_a 都在 patch 函数作用域内）
+self.final_layer(hidden_states, timestep_embedding, video_seg, audio_seg,
+                 sigma_v, transformer_options.get("sample_sigmas"), (shift_v, shift_a))
+```
+
+上游 `silveroxides/ComfyUI-UtilsCollection` 的 main 分支（截至 2026-08-29）**也还没修**，
+所以不能靠升级 UtilsCollection 解决——要么等上游跟进，要么保持这个 notebook 补丁。
 
 ## 脚本规则（Multishot 接缝不崩的关键）
 
@@ -197,6 +246,82 @@ bash scripts/colab-login.sh colab-account-2
 ```
 
 token 落到 `~/.colab-accounts/<id>/.config/colab-cli/token.json`，多账号 HOME 隔离互不覆盖。
+
+**手动操作某个账号（关键：token 靠 `$HOME` 隔离，不是 `--config`）：**
+
+```bash
+cd ~/minimax-h3-orchestrator
+# 操作 1 号账号（wxujie666@gmail.com）
+HOME=/home/jieubuntu26/.colab-accounts/colab-account-1 uv run colab whoami
+HOME=/home/jieubuntu26/.colab-accounts/colab-account-1 uv run colab status
+HOME=/home/jieubuntu26/.colab-accounts/colab-account-1 uv run colab sessions
+
+# 操作 2 号账号（wxingxing2026@gmail.com）
+HOME=/home/jieubuntu26/.colab-accounts/colab-account-2 uv run colab status
+
+# ⚠️ 只传 --config 不会切 token！实测：
+#   uv run colab --config .../colab-account-2/.../sessions.json whoami
+#   仍然读默认 HOME 的 token（读到 1 号账号），必须同时设 HOME。
+# --config 只是显式指定 sessions.json，默认 HOME 下等价于
+# ~/.config/colab-cli/sessions.json。
+```
+
+`uv run colab --help` 完整输出（命令全集）：
+
+```text
+Usage: colab [OPTIONS] COMMAND [ARGS]...
+
+ Colab CLI
+
+Options:
+  --client-oauth-config -c <str>  Path to client OAuth config JSON file
+                                  [default: /home/jieubuntu26/.colab-cli-oauth-config.json]
+  --config            <str>       Path to session state file
+                                  (~/.config/colab-cli/sessions.json)
+  --logtostderr                   Log all output to stderr
+  --auth  <oauth2|adc>            Authentication strategy: 'oauth2' (public
+                                  InstalledAppFlow) or 'adc' (Application
+                                  Default Credentials). [default: oauth2]
+  --install-completion            Install completion for the current shell.
+  --show-completion               Show completion for the current shell.
+  --help  -h                      Show this message and exit.
+
+Commands:
+  console         Connect to raw TTY console
+  download        Download a file from a session
+  drivemount      Mount Google Drive at path
+  edit            Edit a file on a running Colab session
+  exec            Execute code in a session
+  help            Show help for a command.
+  install         Install python packages on the VM
+  log             Manage and view session history logs
+  ls              List files in a session
+  new             Create a new session
+  pay             Open the Colab signup page to manage compute units
+  readme          Print the bundled README.md file
+  repl            Start an interactive REPL
+  restart-kernel  Restart a session's kernel
+  rm              Remove a remote file
+  run             Run a Python script on a fresh Colab VM, then release the VM
+  sessions        List all active sessions
+  skill           Print the bundled COLAB_SKILL.md file
+  status          Show session status
+  stop            Stop a session
+  update          Check for latest version and print if an update is available
+  upload          Upload a file to a session
+  url             Print a browser URL that connects to an existing session.
+  version         Show the version of the Colab CLI
+```
+
+常用子命令（都需前缀 `HOME=<账号 HOME> uv run colab`）：
+- `new -s <name> --gpu T4`：开一个带 T4 的 session
+- `exec -s <name> -f <本地脚本.py>`：把本地脚本传到 session 里跑（`--timeout` 设秒数）
+- `status` / `sessions`：查 session 状态 / 列表
+- `stop -s <name>`：终止 session（Kaggle 没有的 terminate）
+- `download -s <name> <远端路径> <本地路径>`：从 session 拉文件（**不走 kernel，比 exec 稳**）
+- `upload -s <name> <本地> <远端>`：传文件（**不走 kernel，比 exec 稳**）
+- `ls -s <name> <远端目录>`：列目录
+- `restart-kernel -s <name>`：重启 kernel（⚠️ 可能触发 Colab 回收 VM）
 
 **启用账号（`.env`）：**
 

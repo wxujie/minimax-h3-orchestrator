@@ -49,14 +49,38 @@ def test_capacity_when_not_authorized(monkeypatch):
     assert "not authorized" in cap.reason
 
 
-def test_ensure_notebook_reuses_existing_session(monkeypatch):
+def test_ensure_notebook_reuses_completed_session(monkeypatch):
+    """Session 存在且 bootstrap marker 已写 -> 直接复用，不重启、不重跑。"""
     mgr = ColabManager(_acct())
     monkeypatch.setattr(mgr, "_session_exists", lambda slug: True)
+    monkeypatch.setattr(mgr, "_bootstrap_done", lambda slug: True)
     called_start = {"v": False}
     monkeypatch.setattr(mgr, "_start_session", lambda slug: called_start.update(v=True))
-    monkeypatch.setattr(mgr, "_run_notebook", lambda slug, nb: True)
+    ran = {"v": False}
+    monkeypatch.setattr(mgr, "_run_notebook",
+                        lambda slug, nb: ran.update(v=True) or True)
     assert mgr.ensure_notebook("nb-x", {"cells": []}) is True
     assert called_start["v"] is False
+    assert ran["v"] is False  # 不重跑 bootstrap
+
+
+def test_ensure_notebook_redrives_incomplete_session(monkeypatch):
+    """Session 存在但 marker 缺失（上次 bootstrap 失败/没跑完）-> 重跑 bootstrap。
+
+    这是历史 bug 的回归测试：以前 `_session_exists` 为真就直接 return True，
+    空壳 session 被当成就绪，worker 永远不注册。
+    """
+    mgr = ColabManager(_acct())
+    monkeypatch.setattr(mgr, "_session_exists", lambda slug: True)
+    monkeypatch.setattr(mgr, "_bootstrap_done", lambda slug: False)
+    called_start = {"v": False}
+    monkeypatch.setattr(mgr, "_start_session", lambda slug: called_start.update(v=True))
+    ran = {"v": False}
+    monkeypatch.setattr(mgr, "_run_notebook",
+                        lambda slug, nb: ran.update(v=True) or True)
+    assert mgr.ensure_notebook("nb-x", {"cells": []}) is True
+    assert called_start["v"] is False  # session 在，不重复 new
+    assert ran["v"] is True  # 但必须重跑 bootstrap
 
 
 def test_ensure_notebook_starts_new_session(monkeypatch):

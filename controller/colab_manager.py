@@ -150,17 +150,45 @@ class ColabManager:
         kernels do; a session IS the running notebook. So ensure_notebook
         means: ensure a session named ``slug`` exists (start one if not) and
         the bootstrap has been executed.
+
+        The bootstrap (model download + ComfyUI + worker runner) takes
+        20-40 minutes, so it is launched **in the background** — exec returns
+        immediately after firing it. Completion is signalled by a marker file
+        (``/tmp/.bootstrap_done``) written right before the runner blocks. This
+        avoids the historical failure where ``colab exec`` timed out after 600s
+        and the session was wrongly marked QUOTA_EXHAUSTED even though the
+        bootstrap was still downloading models.
         """
-        if self._session_exists(slug):
+        # A session that hasn't finished bootstrapping must be re-drive, not
+        # short-circuited: the VM may have died mid-download, or the previous
+        # bootstrap may have failed before writing the marker. The bootstrap is
+        # idempotent (wget -c resumes) so re-running is cheap relative to a
+        # dead worker that never registers.
+        if self._session_exists(slug) and self._bootstrap_done(slug):
             return True
-        if not self._start_session(slug):
-            return False
+        if not self._session_exists(slug):
+            if not self._start_session(slug):
+                return False
         return self._run_notebook(slug, notebook_json)
 
     def _session_exists(self, slug: str) -> bool:
         try:
             r = self._run(["sessions"], timeout=60)
             return r.returncode == 0 and slug in (r.stdout or "")
+        except Exception:
+            return False
+
+    def _bootstrap_done(self, slug: str) -> bool:
+        """Check the remote marker file without going through the kernel.
+
+        ``colab ls`` talks to the VM filesystem directly (no Jupyter kernel
+        round-trip), so it works even while the long-running bootstrap is still
+        occupying the kernel.
+        """
+        try:
+            r = self._run(["ls", "-s", slug, "/tmp/.bootstrap_done"],
+                          timeout=60)
+            return r.returncode == 0 and ".bootstrap_done" in (r.stdout or "")
         except Exception:
             return False
 
@@ -188,8 +216,14 @@ class ColabManager:
         dir`` becomes ``os.chdir(dir)``. The remaining code runs as-is.
         """
         import nbformat  # local import; optional dep
+        # The Kaggle builder adds a top-level ``kaggle`` key (accelerator hints)
+        # that Kaggle's CLI understands but the nbformat v4 schema rejects as an
+        # unexpected property. Colab executes the notebook as a plain script, so
+        # those hints are meaningless here — strip the key before validation.
+        colab_nb = json.loads(json.dumps(notebook_json))
+        colab_nb.pop("kaggle", None)
         try:
-            doc = nbformat.reads(json.dumps(notebook_json), as_version=4)
+            doc = nbformat.reads(json.dumps(colab_nb), as_version=4)
         except Exception as e:  # noqa: BLE001
             log.error("notebook_parse_failed err=%s", e)
             return False
@@ -233,11 +267,30 @@ class ColabManager:
             td = Path(td)
             py_path = td / "bootstrap.py"
             py_path.write_text(script, encoding="utf-8")
-            return self._exec(slug, str(py_path), timeout=600)
+            # 上传 bootstrap 到远端，再用一个极小 wrapper 后台启动它。
+            # 直接 colab exec bootstrap 会同步等 20-40 分钟（模型下载），
+            # 期间 controller 的 scheduler 线程整个阻塞，还会在 600s 超时后
+            # 把正常冷启动中的 notebook 误标 QUOTA_EXHAUSTED。
+            remote_py = "/tmp/bootstrap.py"
+            if not self._upload(slug, str(py_path), remote_py):
+                return False
+            wrapper = td / "launch.py"
+            wrapper.write_text(
+                "import subprocess, sys\n"
+                "subprocess.Popen(\n"
+                "    [sys.executable, '/tmp/bootstrap.py'],\n"
+                "    start_new_session=True,\n"
+                "    stdout=open('/tmp/bootstrap.log', 'w'),\n"
+                "    stderr=subprocess.STDOUT,\n"
+                ")\n"
+                "print('BOOTSTRAP_LAUNCHED')\n",
+                encoding="utf-8",
+            )
+            return self._exec(slug, str(wrapper), timeout=300)
 
     def _upload(self, slug: str, local: str, remote: str) -> bool:
         try:
-            r = self._run(["upload", "-s", slug, local, remote], timeout=120)
+            r = self._run(["upload", "-s", slug, local, remote], timeout=180)
             return r.returncode == 0
         except Exception:
             return False

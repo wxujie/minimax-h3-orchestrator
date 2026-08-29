@@ -85,6 +85,8 @@ class JobRequest(BaseModel):
     workflow: str = "minimax-h3"
     graph: Optional[dict] = None
     model_overrides: Optional[dict] = None
+    # 单任务最大渲染秒数；None = 用 worker 的 spec.job_timeout_s（全局默认）。
+    timeout_s: Optional[float] = None
 
 
 @dataclass
@@ -349,8 +351,13 @@ class WorkerAgent:
             return
 
         try:
+            # job 级超时优先，否则回落 worker 全局超时。
+            effective_timeout = (
+                p.timeout_s if p.timeout_s is not None
+                else self.spec.job_timeout_s
+            )
             history = self.comfy.wait_for_history(
-                rj.prompt_id, timeout_s=self.spec.job_timeout_s)
+                rj.prompt_id, timeout_s=effective_timeout)
             rj.progress = 100
             out_dir = os.path.join(self.spec.output_dir, job_id)
             path = self.comfy.download_output(history, out_dir)

@@ -145,3 +145,51 @@ def test_upload_stages_sanitized_filename(agent):
                 files={"file": ("../../escape.png", b"x")})
     assert up.status_code == 200
     assert up.json() == {"filename": "escape.png"}
+
+def test_job_timeout_override_and_fallback(agent):
+    """任务级 timeout_s 覆盖 worker 默认；不传则回落 spec.job_timeout_s。"""
+    seen = {}
+    orig_wait = agent.comfy.wait_for_history
+
+    def recording_wait(prompt_id, timeout_s=3600, poll_s=5.0, on_progress=None):
+        seen["timeout"] = timeout_s
+        return orig_wait(prompt_id, timeout_s=timeout_s, poll_s=poll_s,
+                         on_progress=on_progress)
+
+    agent.comfy.wait_for_history = recording_wait
+    c = TestClient(agent.app)
+
+    # stage first_frame（和 end-to-end 测试一样，否则 job 会在 staging 失败）
+    up = c.post("/jobs/input", headers=TOKEN,
+                files={"file": ("frame.png", b"\x89PNG\x0d\x0a frame")})
+    assert up.status_code == 200
+
+    # 1. 带 timeout_s=123 -> 用它
+    r = c.post("/jobs", headers=TOKEN, json={
+        "prompt_text": "x", "duration": 2.0, "first_frame": "frame.png",
+        "timeout_s": 123,
+    })
+    assert r.status_code == 200, r.text
+    jid1 = r.json()["job_id"]
+    deadline = _deadline()
+    while time.time() < deadline:
+        if agent.jobs[jid1].status in ("DONE", "FAILED"):
+            break
+        time.sleep(0.02)
+    assert agent.jobs[jid1].status == "DONE"
+    assert seen["timeout"] == 123
+
+    # 2. 不传 -> 回落 spec.job_timeout_s（默认 7200）
+    seen.clear()
+    r = c.post("/jobs", headers=TOKEN, json={
+        "prompt_text": "y", "duration": 2.0, "first_frame": "frame.png",
+    })
+    assert r.status_code == 200, r.text
+    jid2 = r.json()["job_id"]
+    deadline = _deadline()
+    while time.time() < deadline:
+        if agent.jobs[jid2].status in ("DONE", "FAILED"):
+            break
+        time.sleep(0.02)
+    assert agent.jobs[jid2].status == "DONE"
+    assert seen["timeout"] == agent.spec.job_timeout_s

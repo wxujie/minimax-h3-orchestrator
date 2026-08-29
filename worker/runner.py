@@ -283,7 +283,9 @@ def run(*, notebook_id: Optional[str] = None, controller_url: Optional[str] = No
             tunnel_log_path=f"/tmp/worker_gpu{gpu}.log",
             input_dir=input_dir,
             output_dir=output_dir,
-            job_timeout_s=7200.0,
+            # 全局默认超时从环境读（controller 注入 JOB_TIMEOUT_S），
+            # 任务级 timeout_s 会在提交时覆盖它。
+            job_timeout_s=float(os.environ.get("JOB_TIMEOUT_S", "7200")),
         )
         agent = WorkerAgent(spec, workflow_factory)
         threading.Thread(

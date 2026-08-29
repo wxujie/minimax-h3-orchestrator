@@ -72,32 +72,23 @@ def create_app() -> FastAPI:
 
 
 class KaggleProvider:
-    """Adapter so the scheduler can talk to whichever Kaggle account manager
-    exists. Real running uses KaggleManager per account; the singleton keeps a
-    registry of the last-used manager."""
+    """Deprecated shim kept for module-import compatibility.
+
+    The real dispatch path is ``controller.providers.ProviderRegistry`` (chosen
+    in ``_init`` below). This class is no longer used by the scheduler; it only
+    remains so any stale importer doesn't break. New code should use
+    ``ProviderRegistry``.
+    """
 
     def __init__(self) -> None:
         self.managers: dict[str, KaggleManager] = {}
 
     def start_notebook(self, account_id: str, notebook_name: str) -> bool:
-        ac = (_accounts.credential(account_id) if _accounts else None)
-        if not ac:
+        from .providers import ProviderRegistry  # local import
+
+        if _accounts is None:
             return False
-        mgr = self.managers.get(account_id) or KaggleManager(ac)
-        self.managers[account_id] = mgr
-        try:
-            cap = mgr.capacity()
-            if not cap.usable:
-                return False
-            body = build_pushed_notebook(notebook_name)
-            if body is None:
-                return False
-            slug = f"{ac.username}/{notebook_name}"
-            return mgr.ensure_notebook(slug, body)
-        except Exception as exc:  # noqa: BLE001
-            log.error("kaggle_start_notebook_failed account=%s err=%s",
-                      account_id, exc)
-            return False
+        return ProviderRegistry(_accounts).start_notebook(account_id, notebook_name)
 
 
 def build_pushed_notebook(notebook_name: str) -> Optional[dict]:
@@ -121,6 +112,7 @@ def build_pushed_notebook(notebook_name: str) -> Optional[dict]:
         worker_auth_secret=settings.worker_auth_secret,
         repo_url=settings.orchestrator_repo_url,
         template_path=settings.notebook_path,
+        job_timeout_s=settings.job_timeout_s,
     )
 
 

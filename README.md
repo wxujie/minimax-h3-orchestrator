@@ -1,10 +1,11 @@
 # MiniMax H3 Orchestrator
 
 Build **MiniMax-H3** image-to-video clips across a pool of free-tier **Kaggle
-GPU notebooks**, all behind one plain HTTP controller. A notebook runs two
-ComfyUI workers (one per GPU); each worker is reached by the controller through
-a private Cloudflare tunnel. As a client you only ever talk to the controller —
-Kaggle accounts, GPU notebooks, and tunnels are fully abstracted away.
+GPU notebooks** (2 GPUs each) and **Google Colab sessions** (1 T4 each), all
+behind one plain HTTP controller. Each notebook/session runs ComfyUI workers;
+each worker is reached by the controller through a private Cloudflare tunnel.
+As a client you only ever talk to the controller — GPU hosts, accounts, and
+tunnels are fully abstracted away.
 
 ```
  ┌────────────┐   HTTP api/v1    ┌────────────────────────────────────┐
@@ -57,8 +58,9 @@ Kaggle accounts, GPU notebooks, and tunnels are fully abstracted away.
 
 Design facts worth knowing up front:
 
-- **Two GPUs per notebook.** Each notebook runs `GPU_PER_NOTEBOOK` (2) ComfyUI
-  workers, so one notebook renders two jobs concurrently.
+- **GPU count varies by backend.** A Kaggle notebook hosts `GPU_PER_NOTEBOOK`
+  (2) ComfyUI workers, so one notebook renders two jobs concurrently; a Colab
+  session is single-GPU (1 worker).
 - **Lazy provisioning.** A notebook is started only when it's actually needed —
   when a job arrives and no READY worker exists. Nothing is pre-armed.
 - **Automatic failover.** If a worker dies mid-render its job is requeued onto
@@ -72,7 +74,7 @@ Design facts worth knowing up front:
 
 | Path | What it is |
 |------|------------|
-| `controller/` | Scheduler, job/worker/account registries, storage, workflow adapters (FL2VA + R2V + Multishot), Kaggle + FastAPI layer |
+| `controller/` | Scheduler, job/worker/account registries, storage, workflow adapters (FL2VA + R2V + Multishot), Kaggle + Colab providers + FastAPI layer |
 | `worker/` | Per-GPU agent that runs inside a notebook (ComfyUI client, Cloudflare tunnel) |
 | `client/sdk.py` | Python SDK for creating / polling / downloading video jobs |
 | `web/index.html` | Live dashboard, served at `/dashboard/` |
@@ -86,8 +88,9 @@ Design facts worth knowing up front:
 
 ## Requirements
 
-- Python **3.11+**
+- Python **3.11+**（本机实测 3.12）
 - One or more free **Kaggle accounts** with API keys ([settings](https://www.kaggle.com/settings))
+- Optional: one or more **Google Colab accounts**（`google-colab-cli` 本地 OAuth 登录，见 `scripts/colab-login.sh`）
 - **Outbound internet** on the controller host (Kaggle API + Cloudflare)
 
 > More accounts → the pool finishes jobs faster. The tool only uses your own
@@ -118,9 +121,9 @@ Edit `.env`. The things you *must* set before anything actually renders:
 | `KAGGLE_ACCOUNT_1_USERNAME` | Your Kaggle username |
 | `KAGGLE_ACCOUNT_1_KEY` | Your Kaggle API key |
 | `WORKER_AUTH_SECRET` | A long random string shared between controller and agents; protects the agent→controller `/agents/register` handshake |
-| `CONTROLLER_PUBLIC_URL` | Publicly reachable root of **this** controller, e.g. `https://<host>:8000`. The pushed Kaggle notebook clones the repo and POSTs `/api/v1/agents/register` here when it boots, so it must be reachable **from Kaggle** (a deployed host or a controller-side tunnel). Without it, the scheduler won't start notebooks — a notebook it can't reach could never round-trip. |
+| `CONTROLLER_PUBLIC_URL` | Publicly reachable root of **this** controller, e.g. `https://<host>:8001`. The pushed Kaggle notebook clones the repo and POSTs `/api/v1/agents/register` here when it boots, so it must be reachable **from Kaggle** (a deployed host or a controller-side tunnel). Without it, the scheduler won't start notebooks — a notebook it can't reach could never round-trip. |
 
-`ORCHESTRATOR_REPO_URL` (default `https://github.com/msaadakram/minimax-h3-orchestrator`)
+`ORCHESTRATOR_REPO_URL` (default `https://github.com/wxujie/minimax-h3-orchestrator`)
 is what the notebook clones to load the worker package + workflow — only override it
 if you fork the repo. Add `KAGGLE_ACCOUNT_2_*`, `KAGGLE_ACCOUNT_3_*`, … blocks for
 more accounts — the count is auto-discovered. Every other setting has a sensible
@@ -138,11 +141,11 @@ ports, poll intervals, retries, retention); see `.env.example` and
 
 ```bash
 source .venv/bin/activate
-uvicorn controller.main:app --reload --port 8000
+uvicorn controller.main:app --reload --port 8001
 ```
 
-- Dashboard: **http://localhost:8000/dashboard/**
-- API root: **http://localhost:8000/api/v1/**
+- Dashboard: **http://localhost:8001/dashboard/**
+- API root: **http://localhost:8001/api/v1/**
 
 The scheduler runs in a background thread automatically — you don't start it
 separately.
@@ -159,7 +162,7 @@ from client.sdk import VideoClient
 
 # The client-facing REST API is not token-gated; run the controller on a
 # private network or behind an auth reverse proxy (see Security notes).
-c = VideoClient("http://localhost:8000")
+c = VideoClient("http://localhost:8001")
 
 job = c.create_video(
     prompt="a raccoon plays the drums on a rooftop",
@@ -193,7 +196,7 @@ Everything lives under `/api/v1/`.
 **Create (JSON, no frames):**
 
 ```bash
-curl -sS -X POST http://localhost:8000/api/v1/jobs \
+curl -sS -X POST http://localhost:8001/api/v1/jobs \
   -H 'Content-Type: application/json' \
   -d '{"prompt":"a neon cat runs through a city","duration":4.0}'
 # {"job_id":"job_ab12cd34ef56","position":0,"status":"QUEUED"}
@@ -202,7 +205,7 @@ curl -sS -X POST http://localhost:8000/api/v1/jobs \
 **Create (multipart, with frames):**
 
 ```bash
-curl -sS -X POST http://localhost:8000/api/v1/jobs/multipart \
+curl -sS -X POST http://localhost:8001/api/v1/jobs/multipart \
   -F 'prompt=a neon cat runs through a city' \
   -F 'duration=4.0' \
   -F 'first_frame=@first.png'
@@ -211,17 +214,17 @@ curl -sS -X POST http://localhost:8000/api/v1/jobs/multipart \
 **Poll, download, cancel:**
 
 ```bash
-curl -sS http://localhost:8000/api/v1/jobs/job_ab12cd34ef56             # status/progress
-curl -sS -o out.mp4 http://localhost:8000/api/v1/jobs/job_ab12cd34ef56/result
-curl -sS -X POST http://localhost:8000/api/v1/jobs/job_ab12cd34ef56/cancel
+curl -sS http://localhost:8001/api/v1/jobs/job_ab12cd34ef56             # status/progress
+curl -sS -o out.mp4 http://localhost:8001/api/v1/jobs/job_ab12cd34ef56/result
+curl -sS -X POST http://localhost:8001/api/v1/jobs/job_ab12cd34ef56/cancel
 ```
 
 **System + pool:**
 
 ```bash
-curl -sS http://localhost:8000/api/v1/system/status   # ready_workers / queued_jobs / …
-curl -sS http://localhost:8000/api/v1/workers
-curl -sS http://localhost:8000/api/v1/accounts
+curl -sS http://localhost:8001/api/v1/system/status   # ready_workers / queued_jobs / …
+curl -sS http://localhost:8001/api/v1/workers
+curl -sS http://localhost:8001/api/v1/accounts
 ```
 
 The client-facing endpoints are **not** token-gated today: `WORKER_AUTH_SECRET`
@@ -258,7 +261,7 @@ The R2V notebook cells download both the ref2va unet and the Turbo LoRA into
 ### Creating an R2V job (JSON)
 
 ```bash
-curl -sS -X POST http://localhost:8000/api/v1/jobs \
+curl -sS -X POST http://localhost:8001/api/v1/jobs \
   -H 'Content-Type: application/json' \
   -d '{
     "workflow": "minimax-h3-r2v",
@@ -316,7 +319,7 @@ hand-off — no extra Motion-Context pack needed for CORE).
 ### Creating a Multishot job (JSON)
 
 ```bash
-curl -sS -X POST http://localhost:8000/api/v1/jobs \
+curl -sS -X POST http://localhost:8001/api/v1/jobs \
   -H 'Content-Type: application/json' \
   -d '{
     "workflow": "minimax-h3-multishot",
@@ -360,6 +363,25 @@ turbo LoRA at 4 steps, 832×480**. Measured 2-shot chains:
 | 8 steps + turbo | ~60 min (times out) |
 | **4 steps + turbo** | **~30 min** |
 | 4 steps + turbo + reference image | ~49 min |
+| **4 steps + turbo + TeaCache** | **~23 min (2×5s) / ~20 min (single 5s)** |
+
+**TeaCache（`UC_MiniMaxH3Cache`）是 T4 上的核心提速件**——内容翻倍（1×10s vs 2×5s）
+耗时几乎不变（23 vs 20 min）。接入要点：`reuse_threshold=0.15`（默认 0.05），
+`device=cpu`（T4 显存紧，residual 放 CPU），依赖 `opencv-python` +
+`typing-extensions` + `unifiedefficientloader>=0.5.3`（`comfy_api` 是 ComfyUI
+内置模块，不要 pip install）。
+
+**2026-08-29 Colab 双账号实测（832×480 + 4步 + turbo + TeaCache）：**
+
+| 内容 | 结果 |
+|------|------|
+| **2×5s（2镜×124帧）** | ✅ **纯渲染 ~11-12min**（每镜重新初始化模型 ~5-6min 是大头，采样只要几秒）|
+| 8s 单镜（192帧） | ⚠️ 采样能跑完，但 Colab 免费档 VM 被回收掉线（两次）|
+| 10s 单镜（238帧） | ❌ **OOM**：峰值 13.1GB，~109s 触发，不是超时 |
+
+**单镜头时长上限**：T4 上 **8s（192帧）采样能扛住，10s（238帧）必 OOM**；
+要 10 秒就 5s×2 链式。另外 Colab 免费档 VM 在重负载 ~25min 后可能被回收，
+长任务建议 Kaggle 或缩短时长。
 
 Experiments with `--enable-triton-backend` (T4's Turing arch gains nothing)
 and GGUF Q4_0 (4-bit precision breaks turbo's 4-step convergence) were both
@@ -369,13 +391,13 @@ and GGUF Q4_0 (4-bit precision breaks turbo's 4-step convergence) were both
 > `reference_images`, the controller passes the original filenames to the
 > worker, which uploads them into ComfyUI's input dir before building the
 > graph (same path as R2V). Reference tokens ride through every sampling
-> step, so expect ~1.6× slower renders.
+> step, so expect ~2.4× slower renders (~49 min vs ~20 min on T4).
 
 ---
 
 ## Live dashboard
 
-Open http://localhost:8000/dashboard/ in a browser. It polls the same endpoints
+Open http://localhost:8001/dashboard/ in a browser. It polls the same endpoints
 and shows at a glance how many workers are **READY / BUSY / OFFLINE**, how many
 jobs are **QUEUED / RUNNING / COMPLETED / FAILED**, and each Kaggle account's
 state — without ever printing a credential.
@@ -479,6 +501,6 @@ agent (fake ComfyUI + fake tunnel), the workflow adapter against the real
 
 ---
 
-> Use this with your own Kaggle accounts and within your own quota/terms. It does
-> not — and will not — bypass Kaggle's rate limits; it simply spreads jobs across
-> the accounts you own and fails cleanly when capacity is exhausted.
+> Use this with your own Kaggle/Colab accounts and within your own quota/terms.
+> It does not — and will not — bypass platform rate limits; it simply spreads jobs
+> across the accounts you own and fails cleanly when capacity is exhausted.
