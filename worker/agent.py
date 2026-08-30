@@ -175,6 +175,51 @@ class WorkerAgent:
                             if j.status == JOB_RUNNING],
             }
 
+        @app.get("/debug")
+        def worker_debug(authorization: Optional[str] = Header(default=None)):
+            """诊断端点：线程栈 + ComfyUI 队列 + 渲染日志 tail。
+
+            卡死时可用它定位：采样线程卡在哪个调用、ComfyUI 是否还在队列中
+            执行、以及 ComfyUI 最近的报错/进度日志。
+            """
+            self._require(authorization)
+            import sys as _sys
+            import traceback as _traceback
+            frames = {}
+            for t in threading.enumerate():
+                f = _sys._current_frames().get(t.ident)
+                if f is None:
+                    frames[t.name] = []
+                    continue
+                frames[t.name] = [
+                    f"{fr.filename}:{fr.lineno} in {fr.name}"
+                    for fr in _traceback.extract_stack(f)
+                ][-8:]
+            # ComfyUI queue (queue_running / queue_pending)
+            queue_info = None
+            try:
+                queue_info = self.comfy.queue()
+            except Exception as e:  # noqa: BLE001
+                queue_info = {"error": str(e)}
+            # ComfyUI 日志 tail（单卡：gpu_index=0 -> /tmp/comfyui_gpu0.log）
+            log_tail = []
+            log_path = f"/tmp/comfyui_gpu{self.spec.gpu_index}.log"
+            try:
+                with open(log_path, "r", errors="replace") as f:
+                    lines = f.readlines()[-30:]
+                log_tail = [ln.rstrip() for ln in lines]
+            except Exception as e:  # noqa: BLE001
+                log_tail = [f"<无法读取 {log_path}: {e}>"]
+            return {
+                "worker_id": self.spec.worker_name,
+                "threads": frames,
+                "comfy_queue": queue_info,
+                "comfy_log_tail": log_tail,
+                "jobs": {jid: {"status": j.status, "progress": j.progress,
+                                 "prompt_id": j.prompt_id}
+                         for jid, j in self.jobs.items()},
+            }
+
         @app.post("/jobs")
         def run_job(job: JobRequest,
                     authorization: Optional[str] = Header(default=None)):

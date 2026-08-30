@@ -126,6 +126,12 @@ class ComfyClient:
         data = r.json()
         return data.get(prompt_id)
 
+    def queue(self) -> dict:
+        """GET /queue: {queue_running, queue_pending} prompt ids."""
+        r = self._get("/queue")
+        self._check(r)
+        return r.json()
+
     def wait_for_history(self, prompt_id: str, timeout_s: float = 7200,
                          poll_s: float = 5.0,
                          on_progress=None) -> dict:
@@ -133,6 +139,12 @@ class ComfyClient:
 
         Returns the history entry dict. Raises ComfyError(transient=False) on
         timeout and transient=True on transport errors.
+
+        ``on_progress`` is invoked on EVERY poll tick (not only when ComfyUI
+        reports ``status_info``). Custom samplers (Multishot) never populate
+        ``status_info``, so a progress callback tied to that field would never
+        fire; passing the whole prompt-status dict every tick lets the caller
+        derive progress from elapsed time instead.
         """
         deadline = time.time() + timeout_s
         last = {}
@@ -146,8 +158,8 @@ class ComfyClient:
             try:
                 ps = self.prompt_status(prompt_id)
                 last = ps
-                if on_progress and ps.get("status_info"):
-                    on_progress(ps["status_info"])
+                if on_progress:
+                    on_progress(ps)
             except ComfyError:
                 pass
             time.sleep(poll_s)
