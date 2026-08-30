@@ -58,7 +58,9 @@ class ErrorClass(str, Enum):
 
 # How many independent GPUs (and therefore ComfyUI instances / workers) a
 # single Kaggle notebook is designed to host.
-GPU_PER_NOTEBOOK = 2
+# NOTE(2026-08-30): 改为 1 —— 双卡各起一个 ComfyUI 会共享 Kaggle 的系统内存，
+# 双份模型常驻 RAM 抢内存反而拖慢单卡渲染。单卡单 worker 更稳。
+GPU_PER_NOTEBOOK = 1
 
 
 class ConfigNode(str, Enum):
