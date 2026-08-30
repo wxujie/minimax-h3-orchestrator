@@ -356,8 +356,17 @@ class WorkerAgent:
                 p.timeout_s if p.timeout_s is not None
                 else self.spec.job_timeout_s
             )
+            # 渲染期间用 elapsed/timeout 估算真实推进（0→90%），完成时跳 100。
+            # 多镜头自定义 sampler 不向 ComfyUI /prompt 上报 step 级进度，
+            # 时间估算是唯一能反映「还在跑、跑到哪」的可靠信号。
+            def _on_progress(_status_info: dict) -> None:
+                elapsed = time.time() - rj.created
+                est = min(90, int(elapsed / max(1.0, effective_timeout) * 90))
+                if est > rj.progress:
+                    rj.progress = est
             history = self.comfy.wait_for_history(
-                rj.prompt_id, timeout_s=effective_timeout)
+                rj.prompt_id, timeout_s=effective_timeout,
+                on_progress=_on_progress)
             rj.progress = 100
             out_dir = os.path.join(self.spec.output_dir, job_id)
             path = self.comfy.download_output(history, out_dir)

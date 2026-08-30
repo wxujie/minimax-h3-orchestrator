@@ -334,6 +334,12 @@ class Scheduler:
             return
         if not st:
             return
+        # 同步 worker 上报的真实进度（0-100）到 DB，供 API 返回。
+        if isinstance(st.get("progress"), int):
+            try:
+                self.jobs.set_progress(job_id, max(0, min(100, st["progress"])))
+            except Exception as exc:  # noqa: BLE001 - progress 同步失败不应阻断状态轮询
+                log.warning("job_progress_sync job=%s err=%s", job_id, exc)
         if st.get("status") == "DONE":
             self._complete(job_id, w_id, client, self._remote(job_id))
         elif st.get("status") in ("FAILED", "CANCELLED"):
@@ -378,6 +384,14 @@ class Scheduler:
             log.warning("job_failed_permanent job_id=%s", job_id)
 
     def _recover_worker(self, worker: dict) -> None:
+        # A worker that is BUSY and actively running a job must NOT be
+        # recovered on a transient /health miss: its agent thread is blocked
+        # in wait_for_history (a long render can outlive a single health
+        # poll), and requeueing here makes the retry collide with a
+        # still-running worker (HTTP 409 "worker busy") and burn all
+        # attempts. Only requeue when the worker has no live job.
+        if worker.get("status") == WorkerStatus.WORKER_BUSY.value:
+            return
         jid = worker.get("current_job_id")
         if not jid:
             return

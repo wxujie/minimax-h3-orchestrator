@@ -103,6 +103,7 @@ class JobManager:
             "job_id": j.id,
             "status": j.status,
             "priority": j.priority,
+            "progress": j.progress if j.progress is not None else 0,
             "created_at": db.utc_iso(j.created_at),
             "worker_id": j.worker_id,
             "account_id": j.account_id,
@@ -123,7 +124,13 @@ class JobManager:
             for k, v in kw.items():
                 if hasattr(j, k):
                     setattr(j, k, v)
-            log.info("job_status_change job_id=%s status=%s", job_id, status.value)
+
+    def set_progress(self, job_id: str, progress: int) -> None:
+        """Update a job's real render progress (0-100)."""
+        with self.store.session() as s:
+            j = s.query(db.Job).get(job_id)
+            if j:
+                j.progress = max(0, min(100, progress))
 
     def assign(self, job_id: str, worker_id: str, account_id: str) -> None:
         with self.store.session() as s:

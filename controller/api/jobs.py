@@ -149,7 +149,8 @@ def get_job(job_id: str):
         raise HTTPException(status_code=404, detail="job not found")
     st = j["status"]
     progress = (100 if st == JobStatus.COMPLETED.value
-                else 0 if st == JobStatus.QUEUED.value else 45)
+                else 0 if st == JobStatus.QUEUED.value
+                else j.get("progress", 0))
     return {
         "job_id": j["job_id"],
         "status": st,

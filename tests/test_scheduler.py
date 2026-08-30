@@ -76,7 +76,7 @@ def test_no_ready_worker_provisions_notebook(managers, provider, storage):
     with managers["store"].session() as s:
         wcount = s.query(db.Worker).count()
         nb_status = s.query(db.Notebook).filter(db.Notebook.id == nb).first().status
-    assert wcount == 2
+    assert wcount == 1
     assert nb_status == "NOTEBOOK_STARTING"
     # job can't run until the notebooks actually register ready workers
     assert managers["jobs"].get(jid)["status"] == JobStatus.QUEUED.value

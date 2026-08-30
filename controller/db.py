@@ -107,6 +107,9 @@ class Job(Base):
     account_id = Column(String, nullable=True)
     error_class = Column(String, default="NONE")
     last_error = Column(Text, nullable=True)
+    # 0-100 真实渲染进度（由 controller 轮询 worker 时同步）。
+    # 0=排队/未开始，100=完成；RUNNING 时是 worker 上报的最新采样进度。
+    progress = Column(Integer, default=0)
     result_artifact_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=_utcnow, index=True)
     started_at = Column(DateTime, nullable=True)
@@ -174,6 +177,28 @@ class Store:
         maker = sessionmaker(bind=self.engine, future=True)
         self.Session = maker
         Base.metadata.create_all(self.engine)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Lightweight column migrations for existing SQLite databases.
+
+        ``create_all`` only creates missing tables; it never adds columns to
+        an already-existing table. Add additive migrations here.
+        """
+        if not self.url.startswith("sqlite"):
+            return
+        import sqlite3 as _sq
+        db_path = self.url.split("sqlite:///", 1)[1]
+        if db_path == ":memory:":
+            return
+        conn = _sq.connect(db_path)
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+            if "progress" not in cols:
+                conn.execute("ALTER TABLE jobs ADD COLUMN progress INTEGER DEFAULT 0")
+                conn.commit()
+        finally:
+            conn.close()
 
     @contextmanager
     def session(self) -> Iterator[object]:
