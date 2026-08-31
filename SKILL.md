@@ -340,6 +340,45 @@ COLAB_ACCOUNT_1_ENABLED=true
 - `jupyter-kernel-client` 必须 `<1.0`（1.0.2 把 `KernelClient` 改名成 `JupyterKernelClient`，colab CLI 0.6.0 会崩）
 - OAuth scope 校验 bug：登录脚本已内置 `OAUTHLIB_RELAX_TOKEN_SCOPE=1`
 
+### Cloudflare named 隧道（★ 固定域名回连，替代 quick tunnel）
+
+worker 默认 `TUNNEL_MODE=quick`（随机 trycloudflare URL），生产用 `named` 固定域名
+`https://<worker-id>.<TUNNEL_DOMAIN>`。用的是 **locally-managed 隧道**
+（`cloudflared tunnel create` 的 credentials + config.yml），**不是** remotely-managed `--token`。
+
+建隧道统一用脚本（幂等，`--force` 强制重建，自动配一级子域 + proxied=false + 写回 .env）：
+
+```bash
+cd ~/minimax-h3-orchestrator
+bash scripts/create-worker-tunnel.sh <account_id> <notebook_name> <gpu_count> <agent_port_base> jayapp.cn [--force]
+# 例：bash scripts/create-worker-tunnel.sh kaggle-account-1 nb-kaggle-account-1 1 8000 jayapp.cn --force
+```
+
+三条硬性要求（**每一条都实测踩过坑**）：
+
+1. **TUNNEL_DOMAIN 必须是一级子域**（如 `jayapp.cn`），hostname 形如 `<worker-id>.jayapp.cn`。
+   Cloudflare 通用证书只覆盖 `*.jayapp.cn`，**二级子域**（`*.tunnel.jayapp.cn`）不在证书里，
+   导致 TLS handshake failure（alert 40 / no peer certificate）。
+2. **DNS 记录必须 proxied=false（灰云）**。`cloudflared tunnel route dns` 默认建 `proxied=true`
+   （橙云），橙云让边缘尝试 SSL 代理，与隧道 QUIC 通道冲突，同样 TLS handshake failure。
+   脚本已自动用 cert.pem 里解码的 apiToken + zoneID 调 Cloudflare API 改 false。
+3. **credentials-file 路径**：写 `/tmp/cloudflared-tunnel/credentials.json`（不能用 `/tmp/cloudflared`，
+   那是 cloudflared 二进制文件，会 FileExistsError）。
+
+**cloudflared 参数顺序坑**：`--config` 和 `--no-autoupdate` 都必须放 `run` 之前：
+`cloudflared tunnel --config <path> --no-autoupdate run`（放后面会 "exited early" 死循环）。
+
+**隧道被删的坑**：Cloudflare 控制台里隧道若被删，.env 里的 credentials 会失效，
+cloudflared 日志报 `error="Unauthorized: Tunnel not found"` + `Register tunnel error`，
+worker 永远 READY 不了。诊断：`cloudflared tunnel token <name>` 报 "neither the ID nor the
+name of any of your tunnels"。修复：`--force` 重建脚本重新 create + 配 DNS + 写回 .env。
+
+**worker agent 还暴露 `/debug` 端点**（Bearer WORKER_AUTH_SECRET），返回 threads /
+comfy_queue / comfy_log_tail 三字段，卡死排查用：
+```bash
+curl -sS --noproxy '*' -H "Authorization: Bearer $WORKER_AUTH_SECRET" <worker_tunnel_url>/debug
+```
+
 ### 端口
 
 - controller 跑 **8001**（8000 被无关的 node 进程占用）
