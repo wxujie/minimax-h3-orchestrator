@@ -185,11 +185,12 @@ class NamedTunnel:
             f.write(cfg)
 
     def _cmd(self) -> list[str]:
-        # ``--config`` 是 tunnel 命令级 flag，必须放在 ``run`` 子命令之前；
-        # 放在后面会被 cloudflared 当成未知 flag 直接打印 help 并退出。
+        # ``--config`` 和 ``--no-autoupdate`` 都是 tunnel 命令级 flag，
+        # 必须放在 ``run`` 子命令之前；放后面会被 cloudflared 当成未知
+        # flag 直接打印 help 并退出（已实测踩坑）。
         return [
             self.bin, "tunnel", "--config", self.CONFIG_PATH,
-            "run", "--no-autoupdate",
+            "--no-autoupdate", "run",
         ]
 
     def start(self) -> None:
