@@ -86,14 +86,22 @@ for ((gpu=0; gpu<GPU_COUNT; gpu++)); do
   OUT_DIR="${OUT_ROOT}/${WORKER_ID}"
   mkdir -p "$OUT_DIR"
 
-  # 建隧道（幂等）
-  if cloudflared tunnel info "$TUNNEL_NAME" >/dev/null 2>&1; then
+  # 建隧道（幂等）—— 用 `tunnel list --output json` 拿 ID（`tunnel info`
+  # 在本版本 cloudflared 不支持 --output json，会报 "accepts exactly one
+  # argument"）
+  if cloudflared tunnel list --output json 2>/dev/null | grep -q "\"name\": \"${TUNNEL_NAME}\""; then
     echo "  ✅ 隧道 '${TUNNEL_NAME}' 已存在，复用"
   else
     echo "  🆕 创建隧道 '${TUNNEL_NAME}'"
     cloudflared tunnel create "$TUNNEL_NAME" >/dev/null
   fi
-  TUNNEL_ID="$(cloudflared tunnel info "$TUNNEL_NAME" --output json | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')"
+  TUNNEL_ID="$(cloudflared tunnel list --output json | python3 -c "
+import sys, json
+for t in json.load(sys.stdin):
+    if t['name'] == '${TUNNEL_NAME}':
+        print(t['id'])
+        break
+")"
 
   # 配 DNS
   echo "  🌐 配置 DNS: ${HOSTNAME}"

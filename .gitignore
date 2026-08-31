@@ -24,3 +24,5 @@ htmlcov/
 *.swp
 .idea/
 .vscode/
+# Cloudflare tunnel artifacts (credentials are secrets)
+scripts/.tunnels/
