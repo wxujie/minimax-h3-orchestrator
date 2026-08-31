@@ -30,6 +30,7 @@ NOTEBOOK_NAME="$2"
 GPU_COUNT="$3"
 AGENT_PORT_BASE="$4"
 TUNNEL_DOMAIN="$5"
+FORCE="${6:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -66,11 +67,16 @@ esac
 CONFIG_KEY="${PREFIX}_TUNNEL_CONFIG"
 CREDS_KEY="${PREFIX}_TUNNEL_CREDENTIALS"
 
-# 已在 .env 配好则跳过（幂等）
-if grep -q "^${CONFIG_KEY}=.\+" "$ENV_FILE" 2>/dev/null \
+# 已在 .env 配好则跳过（幂等），除非 --force
+if [ "$FORCE" != "--force" ] \
+   && grep -q "^${CONFIG_KEY}=.\+" "$ENV_FILE" 2>/dev/null \
    && grep -q "^${CREDS_KEY}=.\+" "$ENV_FILE" 2>/dev/null; then
-  echo "✅ ${ACCOUNT_ID} 已在 .env 配置隧道，跳过"
+  echo "✅ ${ACCOUNT_ID} 已在 .env 配置隧道，跳过（--force 可强制重建）"
   exit 0
+fi
+
+if [ "$FORCE" = "--force" ]; then
+  echo "⚠️  强制重建模式：将覆盖 ${ACCOUNT_ID} 的隧道配置"
 fi
 
 echo "🔧 为 ${ACCOUNT_ID} 生成隧道（${GPU_COUNT} worker）..."
@@ -106,6 +112,55 @@ for t in json.load(sys.stdin):
   # 配 DNS
   echo "  🌐 配置 DNS: ${HOSTNAME}"
   cloudflared tunnel route dns --overwrite-dns "$TUNNEL_NAME" "$HOSTNAME" >/dev/null
+
+  # 关键修复：route dns 默认 proxied=true（橙云），会与 tunnel 的 QUIC 通道
+  # 冲突导致 TLS handshake failure（alert 40）。必须改成 proxied=false（灰云）。
+  # 从 cert.pem 解码 apiToken + zoneID（cert.pem 是 JWT，含这些字段）。
+  ZONE_ID="$(python3 - <<'PY'
+import json, base64, os
+cert = os.path.expanduser("~/.cloudflared/cert.pem")
+with open(cert) as f:
+    content = f.read()
+# cert.pem 是 ARGO TUNNEL TOKEN，BEGIN/END 之间是 base64 编码的 JSON
+b64 = content.split('BEGIN ARGO TUNNEL TOKEN-----')[1].split('-----END')[0].strip()
+try:
+    data = json.loads(base64.b64decode(b64))
+    print(data.get('zoneID', ''))
+except Exception:
+    print('')
+PY
+)"
+  API_TOKEN="$(python3 - <<'PY'
+import json, base64, os
+cert = os.path.expanduser("~/.cloudflared/cert.pem")
+with open(cert) as f:
+    content = f.read()
+b64 = content.split('BEGIN ARGO TUNNEL TOKEN-----')[1].split('-----END')[0].strip()
+try:
+    data = json.loads(base64.b64decode(b64))
+    print(data.get('apiToken', ''))
+except Exception:
+    print('')
+PY
+)"
+  if [ -n "$ZONE_ID" ] && [ -n "$API_TOKEN" ]; then
+    DNS_RECORD_ID="$(curl -sS --noproxy '*' \
+      -H "Authorization: Bearer ${API_TOKEN}" \
+      "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?type=CNAME&name=${HOSTNAME}" \
+      | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['result'][0]['id'] if r.get('result') else '')")"
+    if [ -n "$DNS_RECORD_ID" ]; then
+      curl -sS --noproxy '*' -X PATCH \
+        -H "Authorization: Bearer ${API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{"proxied":false}' \
+        "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${DNS_RECORD_ID}" \
+        | python3 -c "import sys,json; r=json.load(sys.stdin); print('    proxied=false:', r.get('success', False))"
+    else
+      echo "    ⚠️  未找到 DNS 记录，proxied 可能仍是 true"
+    fi
+  else
+    echo "    ⚠️  无法从 cert.pem 解码 zoneID/apiToken，请手动把 ${HOSTNAME} 的 proxied 改成 false（灰云）"
+  fi
 
   # 提取 credentials
   CRED_SRC="${HOME}/.cloudflared/${TUNNEL_ID}.json"
