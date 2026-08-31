@@ -171,9 +171,18 @@ class NamedTunnel:
         os.makedirs(os.path.dirname(self.CRED_PATH), exist_ok=True)
         with open(self.CRED_PATH, "w", encoding="utf-8") as f:
             f.write(self.credentials_content)
+        # 防御：config 里若还有旧版 credentials-file 路径，强制改成本类的
+        # 实际凭证路径，避免 /tmp/cloudflared 与二进制文件冲突的历史坑。
+        import re as _re
+        cfg = self.config_content
+        cfg = _re.sub(
+            r"credentials-file:\s*\S+",
+            f"credentials-file: {self.CRED_PATH}",
+            cfg,
+        )
         os.makedirs(os.path.dirname(self.CONFIG_PATH), exist_ok=True)
         with open(self.CONFIG_PATH, "w", encoding="utf-8") as f:
-            f.write(self.config_content)
+            f.write(cfg)
 
     def _cmd(self) -> list[str]:
         return [
