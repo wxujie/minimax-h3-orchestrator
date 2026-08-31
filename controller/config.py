@@ -34,6 +34,10 @@ class AccountConfig:
     key: str
     provider: str = "kaggle"   # "kaggle" | "colab"
     enabled: bool = True
+    # Named-tunnel (locally-managed) credentials + config, injected per worker
+    # by the locally run scripts/create-worker-tunnel.sh. Empty = quick tunnel.
+    tunnel_config: str = ""
+    tunnel_credentials: str = ""
 
 
 def _env(name: str, default: str = "") -> str:
@@ -70,8 +74,10 @@ def _parse_accounts() -> List[AccountConfig]:
     """
     accounts: List[AccountConfig] = []
 
-    # Kaggle: KAGGLE_ACCOUNT_<N>_USERNAME / KEY / ENABLED
-    kg_pattern = re.compile(r"^KAGGLE_ACCOUNT_(\d+)_(USERNAME|KEY|ENABLED)$")
+    # Kaggle: KAGGLE_ACCOUNT_<N>_USERNAME / KEY / ENABLED /
+    #         TUNNEL_CONFIG / TUNNEL_CREDENTIALS
+    kg_pattern = re.compile(
+        r"^KAGGLE_ACCOUNT_(\d+)_(USERNAME|KEY|ENABLED|TUNNEL_CONFIG|TUNNEL_CREDENTIALS)$")
     kg_by_index: dict[str, dict[str, str]] = {}
     for key, val in os.environ.items():
         m = kg_pattern.match(key)
@@ -93,11 +99,14 @@ def _parse_accounts() -> List[AccountConfig]:
                 key=k,
                 provider="kaggle",
                 enabled=enabled.strip().lower() in {"1", "true", "yes", "on", ""},
+                tunnel_config=cfg.get("tunnel_config", ""),
+                tunnel_credentials=cfg.get("tunnel_credentials", ""),
             )
         )
 
-    # Colab: COLAB_ACCOUNT_<N>_ENABLED (optionally COLAB_ACCOUNT_<N>_ID)
-    colab_pattern = re.compile(r"^COLAB_ACCOUNT_(\d+)_(ID|ENABLED)$")
+    # Colab: COLAB_ACCOUNT_<N>_ID / ENABLED / TUNNEL_CONFIG / TUNNEL_CREDENTIALS
+    colab_pattern = re.compile(
+        r"^COLAB_ACCOUNT_(\d+)_(ID|ENABLED|TUNNEL_CONFIG|TUNNEL_CREDENTIALS)$")
     colab_by_index: dict[str, dict[str, str]] = {}
     for key, val in os.environ.items():
         m = colab_pattern.match(key)
@@ -115,6 +124,8 @@ def _parse_accounts() -> List[AccountConfig]:
                 key="",        # no secret in env
                 provider="colab",
                 enabled=enabled.strip().lower() in {"1", "true", "yes", "on", ""},
+                tunnel_config=cfg.get("tunnel_config", ""),
+                tunnel_credentials=cfg.get("tunnel_credentials", ""),
             )
         )
 
@@ -155,6 +166,12 @@ class Settings:
     worker_auth_secret: str = field(default_factory=lambda: _env("WORKER_AUTH_SECRET", ""))
     # Internal callers (controller<->worker) transmit this header value.
     cloudflare_token: str = field(default_factory=lambda: _env("CLOUDFLARE_TOKEN", ""))
+    # Named (fixed) tunnel backend for workers. ``tunnel_mode=quick`` keeps the
+    # zero-config *.trycloudflare.com URLs; ``tunnel_mode=named`` runs
+    # ``cloudflared tunnel run --token`` against a pre-provisioned tunnel and
+    # deterministic ``https://<worker-id>.<tunnel_domain>`` URL (no login).
+    tunnel_mode: str = field(default_factory=lambda: _env("TUNNEL_MODE", "quick"))
+    tunnel_domain: str = field(default_factory=lambda: _env("TUNNEL_DOMAIN", ""))
 
     storage_dir: Path = field(default_factory=lambda: Path(_env("STORAGE_DIR", "./storage")))
 
@@ -188,6 +205,7 @@ class Settings:
         secrets = [self.worker_auth_secret, self.cloudflare_token]
         secrets += [a.key for a in self.accounts]
         secrets += [a.username for a in self.accounts]
+        secrets += [a.tunnel_credentials for a in self.accounts]
         return [s for s in secrets if s]
 
 

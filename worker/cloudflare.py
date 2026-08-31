@@ -7,10 +7,13 @@ Two supported modes (selected via ``TUNNEL_MODE`` env on the worker):
     discovered by parsing the cloudflared log (rapid timer, no token needed).
     This is the zero-config mode used by the reference notebook.
 
-  * ``named``   — requires CLOUDFLARE_TOKEN + TUNNEL_DOMAIN. The worker runs a
-    *named* tunnel and (re)connects it; the public URL is deterministic
-    (``https://<worker-id>.<domain>``) so the controller can compute it without
-    reading logs. Best for production: stable URLs survive restarts.
+  * ``named``   — locally-managed fixed tunnel. Requires the worker env
+    CLOUDFLARE_TUNNEL_CONFIG (config.yml) + CLOUDFLARE_TUNNEL_CREDENTIALS
+    (credentials.json) + TUNNEL_DOMAIN, all injected per account by the
+    controller. The worker runs ``cloudflared tunnel run --config`` with no
+    browser login; the public URL is deterministic
+    (``https://<worker-id>.<domain>``) so the controller can compute it
+    without reading logs, and it survives worker restarts.
 
 Whichever mode, the tunnel fronts ONLY the worker agent (never ComfyUI directly).
 The agent's /health + /status mirror the public URL so the controller can verify
@@ -123,3 +126,98 @@ class QuickTunnel:
 def named_tunnel_url(sub_id: str, domain: str) -> str:
     """Deterministic public URL for a named tunnel  with one known hostname."""
     return f"https://{sub_id}.{domain}"
+
+
+class NamedTunnel:
+    """Run a Cloudflare *locally-managed* named tunnel on a worker.
+
+    A locally-managed tunnel needs BOTH pieces (unlike remotely-managed
+    ``--token``, whose ingress lives in the dashboard):
+
+      * ``credentials.json`` — the tunnel's JWT credentials (equiv. token);
+      * ``config.yml`` — ingress rules mapping the public hostname to the
+        local origin port (without this, cloudflared falls back to :8080).
+
+    Both are generated once on a trusted machine by
+    ``scripts/create-worker-tunnel.sh`` and injected into the worker as env
+    values; the worker writes them to disk and runs
+    ``cloudflared tunnel run --config <config.yml>``. No browser login, no
+    ``cert.pem``, no ``~/.cloudflared`` state on the worker.
+
+    The public URL is deterministic — ``https://<worker-id>.<domain>`` — so
+    the controller can compute it without parsing logs, and it survives
+    worker restarts.
+    """
+
+    CRED_PATH = "/tmp/cloudflared/credentials.json"
+    CONFIG_PATH = "/tmp/cloudflared/config.yml"
+
+    def __init__(self, config_content: str, credentials_content: str,
+                 log_path: str, public_url: str,
+                 bin_path: str = "/tmp/cloudflared") -> None:
+        if not config_content or not credentials_content:
+            raise ValueError(
+                "named tunnel requires both config.yml and credentials content")
+        if not public_url:
+            raise ValueError("named tunnel requires a deterministic public_url")
+        self.config_content = config_content
+        self.credentials_content = credentials_content
+        self.log_path = log_path
+        self.public_url = public_url
+        self.bin = ensure_cloudflared(bin_path)
+        self.proc: Optional[subprocess.Popen] = None
+
+    def _write_files(self) -> None:
+        os.makedirs(os.path.dirname(self.CRED_PATH), exist_ok=True)
+        with open(self.CRED_PATH, "w", encoding="utf-8") as f:
+            f.write(self.credentials_content)
+        os.makedirs(os.path.dirname(self.CONFIG_PATH), exist_ok=True)
+        with open(self.CONFIG_PATH, "w", encoding="utf-8") as f:
+            f.write(self.config_content)
+
+    def _cmd(self) -> list[str]:
+        return [
+            self.bin, "tunnel", "run",
+            "--config", self.CONFIG_PATH,
+            "--no-autoupdate",
+        ]
+
+    def start(self) -> None:
+        self.stop()
+        self._write_files()
+        os.makedirs(os.path.dirname(self.log_path) or ".", exist_ok=True)
+        with open(self.log_path, "w", encoding="utf-8") as f:
+            self.proc = subprocess.Popen(
+                self._cmd(), stdout=f, stderr=subprocess.STDOUT,
+            )
+
+    def is_alive(self) -> bool:
+        if self.proc is None:
+            return bool(self.public_url)
+        return self.proc.poll() is None
+
+    def stop(self) -> None:
+        if self.proc:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=10)
+            except Exception:
+                self.proc.kill()
+            self.proc = None
+
+    def wait_for_url(self, timeout_s: int = 60) -> Optional[str]:
+        """Wait until cloudflared reports a successful registration.
+
+        The URL is deterministic (set at construction); we just wait for the
+        cloudflared process to stay alive — a live process means the named
+        tunnel connected to the edge.
+        """
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if self.proc and self.proc.poll() is not None:
+                log.warning("named cloudflared exited early; restarting")
+                self.start()
+            if self.proc and self.proc.poll() is None:
+                return self.public_url
+            time.sleep(2)
+        return None

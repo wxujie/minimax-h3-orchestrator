@@ -45,13 +45,20 @@ def _pipe_install_cell() -> dict:
 
 def _runner_cell(*, notebook_id: str, controller_public_url: str,
                  worker_auth_secret: str, gpu_count: int,
-                 repo_url: str, job_timeout_s: Optional[float] = None) -> dict:
+                 repo_url: str, job_timeout_s: Optional[float] = None,
+                 tunnel_mode: str = "quick", tunnel_domain: str = "",
+                 cloudflare_tunnel_config: str = "",
+                 cloudflare_tunnel_credentials: str = "") -> dict:
     nb = json.dumps(notebook_id)
     url = json.dumps(controller_public_url)
     sec = json.dumps(worker_auth_secret)
     gpu = json.dumps(str(gpu_count))
     repo = json.dumps(repo_url)
     jt = json.dumps(str(job_timeout_s)) if job_timeout_s is not None else None
+    tmode = json.dumps(tunnel_mode or "quick")
+    tdomain = json.dumps(tunnel_domain or "")
+    cfconfig = json.dumps(cloudflare_tunnel_config or "")
+    cfcreds = json.dumps(cloudflare_tunnel_credentials or "")
 
     source = (
         "# --- MiniMax H3 orchestrator: register GPU workers with the controller ---\n"
@@ -76,6 +83,10 @@ def _runner_cell(*, notebook_id: str, controller_public_url: str,
         f"os.environ.setdefault(\"CONTROLLER_PUBLIC_URL\", {url})\n"
         f"os.environ.setdefault(\"WORKER_AUTH_SECRET\", {sec})\n"
         f"os.environ.setdefault(\"GPU_COUNT\", {gpu})\n"
+        f"os.environ.setdefault(\"TUNNEL_MODE\", {tmode})\n"
+        f"os.environ.setdefault(\"TUNNEL_DOMAIN\", {tdomain})\n"
+        f"os.environ.setdefault(\"CLOUDFLARE_TUNNEL_CONFIG\", {cfconfig})\n"
+        f"os.environ.setdefault(\"CLOUDFLARE_TUNNEL_CREDENTIALS\", {cfcreds})\n"
         + (f"os.environ.setdefault(\"JOB_TIMEOUT_S\", {jt})\n" if jt is not None else "")
         + "\n"
         "# Marker: bootstrap reached the runner (models downloaded, ComfyUI up,\n"
@@ -103,6 +114,10 @@ def build_notebook(
     gpu_count: Optional[int] = None,
     repo_url: Optional[str] = None,
     job_timeout_s: Optional[float] = None,
+    tunnel_mode: str = "quick",
+    tunnel_domain: str = "",
+    cloudflare_tunnel_config: str = "",
+    cloudflare_tunnel_credentials: str = "",
     template_path: Optional[Path] = None,
     template: Optional[dict] = None,
 ) -> dict:
@@ -134,6 +149,10 @@ def build_notebook(
             gpu_count=gpu_count if gpu_count is not None else GPU_PER_NOTEBOOK,
             repo_url=repo_url or DEFAULT_REPO_URL,
             job_timeout_s=job_timeout_s,
+            tunnel_mode=tunnel_mode,
+            tunnel_domain=tunnel_domain,
+            cloudflare_tunnel_config=cloudflare_tunnel_config,
+            cloudflare_tunnel_credentials=cloudflare_tunnel_credentials,
         ))
     nb["cells"] = cells
 

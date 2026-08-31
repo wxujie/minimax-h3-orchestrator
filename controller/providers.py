@@ -80,11 +80,16 @@ class ProviderRegistry:
         return self._start_kaggle(ac, notebook_name)
 
     @staticmethod
-    def _build_body(notebook_name: str, gpu_count: int = 2):
+    def _build_body(notebook_name: str, gpu_count: int = 2,
+                    account: Optional[AccountConfig] = None):
         """Build the registerable ipynb document (shared by both providers).
 
         ``gpu_count`` tells the runner how many GPU workers to bring up on the
         host. Kaggle notebooks get 2 T4s; a Colab session has 1.
+
+        When ``account`` provides named-tunnel credentials (locally-managed
+        Cloudflare tunnel), those are injected per worker so the worker runs a
+        deterministic public URL without any browser login.
         """
         from .config import settings
         from .notebook_builder import build_notebook  # local import
@@ -93,6 +98,8 @@ class ProviderRegistry:
             log.warning("controller_public_url not configured; cannot build "
                         "registerable notebook (set CONTROLLER_PUBLIC_URL)")
             return None
+        tunnel_config = (account.tunnel_config if account else "") or ""
+        tunnel_credentials = (account.tunnel_credentials if account else "") or ""
         return build_notebook(
             notebook_id=notebook_name,
             controller_public_url=settings.controller_public_url,
@@ -101,6 +108,10 @@ class ProviderRegistry:
             template_path=settings.notebook_path,
             gpu_count=gpu_count,
             job_timeout_s=settings.job_timeout_s,
+            tunnel_mode=settings.tunnel_mode,
+            tunnel_domain=settings.tunnel_domain,
+            cloudflare_tunnel_config=tunnel_config,
+            cloudflare_tunnel_credentials=tunnel_credentials,
         )
 
     # ------------------------------------------------------------- kaggle ---
@@ -113,7 +124,7 @@ class ProviderRegistry:
                 log.warning("kaggle_capacity_unusable account=%s reason=%s",
                             ac.id, cap.reason)
                 return False
-            body = self._build_body(notebook_name)
+            body = self._build_body(notebook_name, account=ac)
             if body is None:
                 return False
             slug = f"{ac.username}/{notebook_name}"
@@ -136,7 +147,7 @@ class ProviderRegistry:
                 log.warning("colab_capacity_unusable account=%s reason=%s",
                             ac.id, cap.reason)
                 return False
-            body = self._build_body(notebook_name, gpu_count=1)
+            body = self._build_body(notebook_name, gpu_count=1, account=ac)
             if body is None:
                 return False
             # Colab notebooks are addressed by their document name, no user slug.

@@ -21,6 +21,7 @@ Routes
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import threading
 import time
@@ -35,6 +36,8 @@ from pydantic import BaseModel
 from . import cloudflare as cf
 from . import comfy_client
 from . import gpu as gpumod
+
+log = logging.getLogger("worker.agent")
 
 JOB_QUEUED, JOB_RUNNING, JOB_DONE, JOB_FAILED, JOB_CANCELLED = (
     "QUEUED", "RUNNING", "DONE", "FAILED", "CANCELLED"
@@ -110,11 +113,37 @@ class WorkerAgent:
         self.comfy = comfy_client.ComfyClient(base_url=spec.comfy_base_url)
         self.workflow_factory = workflow_factory
         self.secret = spec.secret or os.environ.get("WORKER_AUTH_SECRET", "")
-        self.tunnel = cf.QuickTunnel(spec.agent_port, spec.tunnel_log_path,
-                                     bin_path=os.environ.get("CLOUDFLARED_BIN", "/tmp/cloudflared"))
+        self.tunnel = self._make_tunnel(spec)
         self.lock = threading.Lock()
         self.jobs: dict[str, RunnableJob] = {}
         self.app = self._build_app()
+
+    @staticmethod
+    def _make_tunnel(spec: WorkerSpec):
+        """Select tunnel backend by TUNNEL_MODE env (quick=default, named)."""
+        mode = os.environ.get("TUNNEL_MODE", "quick").strip().lower()
+        bin_path = os.environ.get("CLOUDFLARED_BIN", "/tmp/cloudflared")
+        if mode == "named":
+            config_content = os.environ.get("CLOUDFLARE_TUNNEL_CONFIG", "")
+            creds_content = os.environ.get("CLOUDFLARE_TUNNEL_CREDENTIALS", "")
+            domain = os.environ.get("TUNNEL_DOMAIN", "")
+            if not config_content or not creds_content or not domain:
+                log.warning(
+                    "TUNNEL_MODE=named but CLOUDFLARE_TUNNEL_CONFIG / "
+                    "CLOUDFLARE_TUNNEL_CREDENTIALS / TUNNEL_DOMAIN unset; "
+                    "falling back to quick tunnel")
+                return cf.QuickTunnel(spec.agent_port, spec.tunnel_log_path,
+                                      bin_path=bin_path)
+            url = cf.named_tunnel_url(spec.worker_name, domain)
+            return cf.NamedTunnel(
+                config_content=config_content,
+                credentials_content=creds_content,
+                log_path=spec.tunnel_log_path,
+                public_url=url,
+                bin_path=bin_path,
+            )
+        return cf.QuickTunnel(spec.agent_port, spec.tunnel_log_path,
+                              bin_path=bin_path)
 
     # ------------------------------------------------------------- security --
     def _auth(self, authorization: Optional[str]) -> bool:
