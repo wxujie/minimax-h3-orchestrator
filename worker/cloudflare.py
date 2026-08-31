@@ -149,8 +149,8 @@ class NamedTunnel:
     worker restarts.
     """
 
-    CRED_PATH = "/tmp/cloudflared/credentials.json"
-    CONFIG_PATH = "/tmp/cloudflared/config.yml"
+    CRED_PATH = "/tmp/cloudflared-tunnel/credentials.json"
+    CONFIG_PATH = "/tmp/cloudflared-tunnel/config.yml"
 
     def __init__(self, config_content: str, credentials_content: str,
                  log_path: str, public_url: str,

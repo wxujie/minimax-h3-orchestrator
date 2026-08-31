@@ -115,7 +115,7 @@ for t in json.load(sys.stdin):
   # 生成 config.yml
   cat > "${OUT_DIR}/config.yml" <<EOF
 tunnel: ${TUNNEL_ID}
-credentials-file: /tmp/cloudflared/credentials.json
+credentials-file: /tmp/cloudflared-tunnel/credentials.json
 
 ingress:
   - hostname: ${HOSTNAME}
