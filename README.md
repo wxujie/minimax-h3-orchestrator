@@ -443,9 +443,16 @@ tunnel so the worker rejoins automatically.
 
 `TUNNEL_MODE=quick` is zero-config for a private experiment — the controller
 reconciles the random URL on each `/health`. For production, use `TUNNEL_MODE=named`
-with `TUNNEL_DOMAIN` and `CLOUDFLARE_TOKEN` so the tunnel URL is deterministic and
-survives notebook restarts. Tunnels expose only the agent — ComfyUI stays local
+with a fixed `TUNNEL_DOMAIN` (locally-managed tunnel, credentials + config.yml) so
+the tunnel URL is deterministic (`https://<worker-id>.<domain>`) and survives
+notebook restarts. Tunnels expose only the agent — ComfyUI stays local
 on the GPU. See [`docs/OPERATIONS.md`](docs/OPERATIONS.md#tunnels).
+
+Named 模式的三条硬性要求（均实测踩坑）：`TUNNEL_DOMAIN` 必须是一级子域
+（Cloudflare 通用证书不覆盖二级子域）；DNS 记录必须 `proxied=false`（`route dns`
+默认橙云，会与 QUIC 通道冲突导致 TLS handshake failure）；credentials 写到
+`/tmp/cloudflared-tunnel/`（避免与 cloudflared 二进制冲突）。建隧道用
+`scripts/create-worker-tunnel.sh`（幂等，`--force` 强制重建）。
 
 ---
 

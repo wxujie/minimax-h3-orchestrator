@@ -23,7 +23,8 @@ Set these in `.env` (see `.env.example`):
 | `NOTEBOOK_START_WAIT_S` | `30` | Time to wait for a notebook to come up |
 | `WORKER_AUTH_SECRET` | — | Shared controller↔worker Bearer secret |
 | `WORKER_AUTH_REQUIRED` | `true` | Gate every worker-agent endpoint |
-| `CLOUDFLARE_TOKEN` | — | Only for `named` tunnel mode |
+| `TUNNEL_DOMAIN` | `jayapp.cn` | named 模式的固定域名（**必须一级子域**，见下） |
+| `TUNNEL_MODE` | `quick` | `quick`（随机 trycloudflare URL）或 `named`（固定域名） |
 | `COLAB_ACCOUNT_<N>_ID/ENABLED` | — | One block per Colab account（OAuth 登录态在隔离 HOME 下，无 env 密钥） |
 | `KAGGLE_ACCOUNT_<N>_USERNAME/KEY/ENABLED` | — | One block per Kaggle account |
 
@@ -51,6 +52,7 @@ POST /api/v1/agents/register
 Config that the agent reads:
 - `WORKER_AUTH_SECRET` — match the controller
 - `TUNNEL_MODE=quick|named`, `TUNNEL_DOMAIN` (named mode), `CLOUDFLARED_BIN`
+- `CLOUDFLARE_TUNNEL_CONFIG` / `CLOUDFLARE_TUNNEL_CREDENTIALS`（named 模式，由 controller 注入）
 
 ## Tunnels
 
@@ -58,11 +60,28 @@ Config that the agent reads:
 yields a random `.trycloudflare.com` URL parsed from the log. Best for ephemeral
 notebooks; URLs change on every run and the controller reconciles via `/health`.
 
-**Named (production).** Requires `CLOUDFLARE_TOKEN` + `TUNNEL_DOMAIN`. The public
-URL is deterministic (`https://<worker-id>.<domain>`) so the controller can derive
-it and reconnect the tunnel after notebook restarts.
+**Named (production, locally-managed).** 用 `cloudflared tunnel create` 建的
+locally-managed 隧道（credentials + config.yml，**不是** remotely-managed `--token`）。
+固定 URL 是 `https://<worker-id>.<TUNNEL_DOMAIN>`，worker 重启后能自动重连同一个域名。
 
-In both modes only the **agent** is exposed — ComfyUI stays local on the GPU.
+三条硬性要求（都踩过坑）：
+
+1. **TUNNEL_DOMAIN 必须是一级子域**（如 `jayapp.cn`），worker hostname 形如
+   `<worker-id>.jayapp.cn`。Cloudflare 通用证书只覆盖 `*.jayapp.cn`，**二级子域**
+   （`*.tunnel.jayapp.cn`）不在证书里，会导致 TLS handshake failure（alert 40）。
+2. **DNS 记录必须 proxied=false（灰云）**。`cloudflared tunnel route dns` 默认建
+   `proxied=true`（橙云），橙云会让边缘尝试 SSL 代理，与 tunnel 的 QUIC 通道冲突，
+   同样 TLS handshake failure。`scripts/create-worker-tunnel.sh` 已自动改 false。
+3. **credentials-file 路径**：凭证写到 `/tmp/cloudflared-tunnel/credentials.json`
+   （不能用 `/tmp/cloudflared`，那是二进制文件，会 FileExistsError）。
+
+建隧道用 `scripts/create-worker-tunnel.sh`（幂等，`--force` 强制重建，自动配
+一级子域 + proxied=false + 写回 .env）。Cloudflare 控制台里的隧道若被删，.env
+里的 credentials 会失效（服务端报 `Tunnel not found`），需 `--force` 重建。
+
+In both modes only the **agent** is exposed — ComfyUI stays local on the GPU。
+worker agent 还暴露 `/debug` 端点（Bearer 认证），返回 threads / comfy_queue /
+comfy_log_tail 三字段，用于卡死排查。
 
 ## Kaggle capacity reality
 
