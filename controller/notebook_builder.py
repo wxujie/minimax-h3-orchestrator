@@ -43,6 +43,38 @@ def _pipe_install_cell() -> dict:
     }
 
 
+def _env_cell(*, tunnel_mode: str = "quick", tunnel_domain: str = "",
+              cloudflare_tunnel_config: str = "",
+              cloudflare_tunnel_credentials: str = "") -> dict:
+    """Build a pre-injection cell that sets tunnel env vars BEFORE cell 24.
+
+    This is required because the notebook template's cell 24 (ComfyUI/quick
+    tunnel bootstrap) reads TUNNEL_MODE to decide whether to start a quick
+    tunnel, but the runner cell (which normally sets these env vars) runs
+    last. Without this early injection, cell 24 sees an empty TUNNEL_MODE and
+    wrongly starts a quick tunnel in named mode.
+    """
+    tmode = json.dumps(tunnel_mode or "quick")
+    tdomain = json.dumps(tunnel_domain or "")
+    cfconfig = json.dumps(cloudflare_tunnel_config or "")
+    cfcreds = json.dumps(cloudflare_tunnel_credentials or "")
+    source = (
+        "# TUNNEL_MODE_PREINJECT — 提前注入隧道环境变量，供 cell 24 判断隧道模式\n"
+        "import os\n"
+        f"os.environ.setdefault(\"TUNNEL_MODE\", {tmode})\n"
+        f"os.environ.setdefault(\"TUNNEL_DOMAIN\", {tdomain})\n"
+        f"os.environ.setdefault(\"CLOUDFLARE_TUNNEL_CONFIG\", {cfconfig})\n"
+        f"os.environ.setdefault(\"CLOUDFLARE_TUNNEL_CREDENTIALS\", {cfcreds})\n"
+    )
+    return {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": source,
+    }
+
+
 def _runner_cell(*, notebook_id: str, controller_public_url: str,
                  worker_auth_secret: str, gpu_count: int,
                  repo_url: str, job_timeout_s: Optional[float] = None,
@@ -134,6 +166,19 @@ def build_notebook(
     # Clone the document so the committed template file is never mutated.
     nb = json.loads(json.dumps(template))
     cells = list(nb.get("cells", []))
+
+    # 前置注入环境变量：cell 24 的 quick-tunnel 逻辑依赖 TUNNEL_MODE 决定
+    # 是否起 quick tunnel，而 runner cell 在最后才 setdefault。若不提前，
+    # cell 24 执行时 TUNNEL_MODE 还是空，named 模式下会误起 quick tunnel。
+    env_cell = _env_cell(
+        tunnel_mode=tunnel_mode,
+        tunnel_domain=tunnel_domain,
+        cloudflare_tunnel_config=cloudflare_tunnel_config,
+        cloudflare_tunnel_credentials=cloudflare_tunnel_credentials,
+    )
+    if not any("TUNNEL_MODE_PREINJECT" in "".join(c.get("source", []))
+               for c in cells):
+        cells.insert(0, env_cell)
 
     # Only append the worker wiring once (idempotent for re-pushes).
     has_runner = any(

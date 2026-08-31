@@ -194,7 +194,20 @@ class NamedTunnel:
     def is_alive(self) -> bool:
         if self.proc is None:
             return bool(self.public_url)
-        return self.proc.poll() is None
+        if self.proc.poll() is not None:
+            return False
+        # 进程活着 ≠ 隧道连上了：必须看到 cloudflared 日志里的
+        # "Registered tunnel connection" 才算真正连上 Cloudflare 边缘。
+        # 凭证错误/边缘拒绝时进程会持续重试不退出，process-alive 会误判。
+        return self._registered_in_log()
+
+    def _registered_in_log(self) -> bool:
+        try:
+            with open(self.log_path, "r", errors="ignore") as f:
+                text = f.read()
+        except FileNotFoundError:
+            return False
+        return "Registered tunnel connection" in text
 
     def stop(self) -> None:
         if self.proc:
@@ -206,18 +219,28 @@ class NamedTunnel:
             self.proc = None
 
     def wait_for_url(self, timeout_s: int = 60) -> Optional[str]:
-        """Wait until cloudflared reports a successful registration.
+        """Wait until cloudflared reports a successful edge registration.
 
-        The URL is deterministic (set at construction); we just wait for the
-        cloudflared process to stay alive — a live process means the named
-        tunnel connected to the edge.
+        Named tunnels have a deterministic URL, but the URL is only reachable
+        once cloudflared actually connects to the edge. A live process is NOT
+        enough (bad credentials make it retry forever while staying alive),
+        so we poll the log for "Registered tunnel connection".
         """
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             if self.proc and self.proc.poll() is not None:
                 log.warning("named cloudflared exited early; restarting")
                 self.start()
-            if self.proc and self.proc.poll() is None:
+            if self.proc and self.proc.poll() is None and self._registered_in_log():
                 return self.public_url
             time.sleep(2)
+        # 超时但进程还活着：大概率凭证/配置有问题，日志里有真实报错。
+        tail = ""
+        try:
+            with open(self.log_path, "r", errors="ignore") as f:
+                tail = "".join(f.readlines()[-5:])
+        except Exception:
+            pass
+        if self.proc is not None and self.proc.poll() is None:
+            log.error("named_tunnel_no_registration tail=%s", tail.strip()[:400])
         return None

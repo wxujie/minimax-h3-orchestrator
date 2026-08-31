@@ -50,8 +50,8 @@ def test_build_notebook_is_idempotent():
               worker_auth_secret="s", gpu_count=1, template=_TEMPLATE)
     doc1 = build_notebook(**kw)
     doc2 = build_notebook(**kw)
-    assert len(doc1["cells"]) == 2  # install + runner
-    assert len(doc2["cells"]) == 2  # no double-append on rebuild
+    assert len(doc1["cells"]) == 3  # env-preinject + install + runner
+    assert len(doc2["cells"]) == 3  # no double-append on rebuild
 
 
 def test_build_notebook_flips_accelerator_and_keeps_template():
@@ -71,8 +71,8 @@ def test_real_template_gets_runner_cell():
         worker_auth_secret="s", template_path=_P("notebooks/minimax-h3-comfyui.ipynb"),
     )
     # reference notebook: 24 base cells + Multishot pack cell = 25;
-    # +TeaCache pack cell = 26; +PDD LoRA cell = 27; +pip-install +runner = 29
-    assert len(doc["cells"]) == 29
+    # +TeaCache pack cell = 26; +PDD LoRA cell = 27; +env-preinject +pip-install +runner = 30
+    assert len(doc["cells"]) == 30
     _runner_cell(doc)
 
 
